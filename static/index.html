@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>NutriTool — Personal Nutrient Tracker</title>
+<script src="vendor/react.production.min.js"></script>
+<script src="vendor/react-dom.production.min.js"></script>
+<script src="vendor/babel.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #e0e2e7;
+    --text: #1c1e21;
+    --text-dim: #6b7280;
+    --accent: #2563eb;
+    --ok: #16a34a;
+    --warn: #d97706;
+    --bad: #dc2626;
+    --track: #e5e7eb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+  }
+  #root { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px 0; }
+  h2 { font-size: 15px; margin: 0 0 10px 0; }
+  .subtitle { color: var(--text-dim); font-size: 12px; margin-bottom: 16px; }
+  .subtitle a { color: var(--accent); }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+  .tab {
+    padding: 8px 14px; cursor: pointer; border: none; background: none;
+    font-size: 13px; color: var(--text-dim); border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  .group-title {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--text-dim); margin: 18px 0 8px 0; font-weight: 600;
+  }
+  .group-title:first-child { margin-top: 0; }
+  .nutrient-row {
+    display: grid; grid-template-columns: 150px 1fr 130px 60px; gap: 10px;
+    align-items: center; padding: 5px 0; font-size: 12.5px;
+  }
+  .nutrient-name { display: flex; align-items: center; gap: 4px; }
+  .bar-track {
+    background: var(--track); border-radius: 4px; height: 10px; overflow: hidden; position: relative;
+  }
+  .bar-fill { height: 100%; border-radius: 4px; transition: width 0.2s; }
+  .bar-fill.ok { background: var(--ok); }
+  .bar-fill.warn { background: var(--warn); }
+  .bar-fill.bad { background: var(--bad); }
+  .nutrient-values { text-align: right; color: var(--text-dim); white-space: nowrap; }
+  .flag-badge {
+    font-size: 10px; padding: 1px 6px; border-radius: 10px; font-weight: 600; text-align: center;
+  }
+  .flag-badge.low { background: #fee2e2; color: var(--bad); }
+  .flag-badge.ok { background: transparent; color: var(--text-dim); }
+  .info-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 14px; height: 14px; border-radius: 50%; background: var(--track);
+    color: var(--text-dim); font-size: 9px; font-weight: 700; cursor: help; flex-shrink: 0;
+  }
+  .badge-tag {
+    font-size: 9px; padding: 0 4px; border-radius: 3px; background: var(--track); color: var(--text-dim);
+    margin-left: 4px; font-weight: 500;
+  }
+  label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 3px; margin-top: 10px; }
+  input, select, button {
+    font-family: inherit; font-size: 13px; padding: 6px 8px; border: 1px solid var(--border);
+    border-radius: 5px; background: #fff; color: var(--text);
+  }
+  input:focus, select:focus { outline: 1px solid var(--accent); }
+  button {
+    cursor: pointer; background: var(--accent); color: #fff; border: none; font-weight: 600;
+  }
+  button:hover { opacity: 0.9; }
+  button.secondary { background: var(--track); color: var(--text); }
+  button.danger { background: var(--bad); color: #fff; }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px 16px; }
+  .food-list { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 5px; margin-top: 6px; }
+  .food-item { padding: 6px 10px; cursor: pointer; border-bottom: 1px solid var(--border); font-size: 12.5px; display: flex; justify-content: space-between; }
+  .food-item:last-child { border-bottom: none; }
+  .food-item:hover { background: #f0f4ff; }
+  .food-item.selected { background: #e0eaff; }
+  .food-item .src { color: var(--text-dim); font-size: 10px; }
+  .log-row {
+    display: grid; grid-template-columns: 1fr 90px 150px 70px 70px; gap: 8px;
+    align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12.5px;
+  }
+  .log-row:last-child { border-bottom: none; }
+  .muted { color: var(--text-dim); font-size: 11px; }
+  .quick-amounts { display: flex; gap: 4px; margin-top: 4px; }
+  .quick-amounts button { padding: 3px 8px; font-size: 11px; }
+  .callout {
+    background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 10px 12px;
+    font-size: 12px; color: #78350f; margin-bottom: 14px;
+  }
+  .footer-note { font-size: 11px; color: var(--text-dim); margin-top: 24px; line-height: 1.6; }
+  .empty-state { color: var(--text-dim); font-size: 12.5px; padding: 20px; text-align: center; }
+  .error-state {
+    background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; padding: 14px;
+    color: #7f1d1d; font-size: 12.5px; line-height: 1.6;
+  }
+  details summary { cursor: pointer; font-size: 12px; color: var(--accent); margin: 4px 0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+/* ============================================================================
+ * PERSONALIZATION CONFIG
+ * ----------------------------------------------------------------------------
+ * Edit these defaults before first run, or use the in-app Settings tab
+ * (which reads/writes this same shape via the hosted /api/data endpoint —
+ * whichever you edit last "wins" once you've opened the app once and saved
+ * via the UI).
+ *
+ *   age            years
+ *   sex            'male' | 'female'  (used because several RDAs, e.g. iron,
+ *                  differ by sex — iron RDA is higher for menstruating women)
+ *   weightKg       body weight in kilograms
+ *   heightCm       height in centimeters
+ *   activityLevel  'sedentary' | 'light' | 'moderate' | 'active'
+ *                  sedentary = little/no exercise
+ *                  light     = light exercise 1-3 days/week
+ *                  moderate  = moderate exercise 3-5 days/week
+ *                  active    = hard exercise 6-7 days/week
+ * ========================================================================= */
+const DEFAULT_CONFIG = {
+  age: 35,
+  sex: 'male',
+  weightKg: 75,
+  heightCm: 178,
+  activityLevel: 'moderate',
+};
+
+/* ============================================================================
+ * NUTRIENT PANEL (29 nutrients)
+ * ----------------------------------------------------------------------------
+ * Note: the original spec summarized this panel as "28 total" (7 macros +
+ * 10 minerals + 11 vitamins) but the explicit vitamin enumeration lists 12
+ * items (A, C, D, E, K, B1, B2, B3, B6, B12, Folate, Choline). We track all
+ * 12 explicitly-named vitamins, making 29 nutrients total. Following the
+ * enumerated list rather than the summary count.
+ *
+ * decay: 'daily'    -> resets at local midnight, compared to daily RDA,
+ *                       flagged below 70% of target
+ *        'calcium'  -> special-cased, see CALCIUM_NOTE below
+ *        'lookback' -> rolling exponential-decay window, flagged below 60%
+ * ========================================================================= */
+const NUTRIENTS = [
+  // Macronutrients
+  { key: 'kcal',      label: 'Calories',       unit: 'kcal',    group: 'macro', decay: 'daily' },
+  { key: 'protein',   label: 'Protein',        unit: 'g',       group: 'macro', decay: 'daily' },
+  { key: 'fat',       label: 'Total Fat',      unit: 'g',       group: 'macro', decay: 'daily' },
+  { key: 'satfat',    label: 'Saturated Fat',  unit: 'g',       group: 'macro', decay: 'daily' },
+  { key: 'carbs',     label: 'Carbohydrates',  unit: 'g',       group: 'macro', decay: 'daily' },
+  { key: 'fiber',     label: 'Fiber',          unit: 'g',       group: 'macro', decay: 'daily' },
+  { key: 'sugar',     label: 'Sugar',          unit: 'g',       group: 'macro', decay: 'daily' },
+  // Minerals
+  { key: 'sodium',     label: 'Sodium',      unit: 'mg',  group: 'mineral', decay: 'daily' },
+  { key: 'potassium',  label: 'Potassium',   unit: 'mg',  group: 'mineral', decay: 'daily' },
+  { key: 'calcium',    label: 'Calcium',     unit: 'mg',  group: 'mineral', decay: 'calcium' },
+  { key: 'iron',       label: 'Iron',        unit: 'mg',  group: 'mineral', decay: 'lookback' },
+  { key: 'magnesium',  label: 'Magnesium',   unit: 'mg',  group: 'mineral', decay: 'lookback' },
+  { key: 'zinc',       label: 'Zinc',        unit: 'mg',  group: 'mineral', decay: 'lookback' },
+  { key: 'phosphorus', label: 'Phosphorus',  unit: 'mg',  group: 'mineral', decay: 'lookback' },
+  { key: 'copper',     label: 'Copper',      unit: 'mg',  group: 'mineral', decay: 'lookback' },
+  { key: 'manganese',  label: 'Manganese',   unit: 'mg',  group: 'mineral', decay: 'lookback' },
+  { key: 'selenium',   label: 'Selenium',    unit: 'mcg', group: 'mineral', decay: 'lookback' },
+  // Vitamins
+  { key: 'vitA',    label: 'Vitamin A',        unit: 'mcg RAE', group: 'vitamin', decay: 'lookback' },
+  { key: 'vitC',    label: 'Vitamin C',        unit: 'mg',      group: 'vitamin', decay: 'daily' },
+  { key: 'vitD',    label: 'Vitamin D',        unit: 'mcg',     group: 'vitamin', decay: 'lookback' },
+  { key: 'vitE',    label: 'Vitamin E',        unit: 'mg',      group: 'vitamin', decay: 'lookback' },
+  { key: 'vitK',    label: 'Vitamin K',        unit: 'mcg',     group: 'vitamin', decay: 'lookback' },
+  { key: 'b1',      label: 'Thiamin (B1)',     unit: 'mg',      group: 'vitamin', decay: 'daily' },
+  { key: 'b2',      label: 'Riboflavin (B2)',  unit: 'mg',      group: 'vitamin', decay: 'daily' },
+  { key: 'b3',      label: 'Niacin (B3)',      unit: 'mg',      group: 'vitamin', decay: 'daily' },
+  { key: 'b6',      label: 'Vitamin B6',       unit: 'mg',      group: 'vitamin', decay: 'daily' },
+  { key: 'b12',     label: 'Vitamin B12',      unit: 'mcg',     group: 'vitamin', decay: 'daily' },
+  { key: 'folate',  label: 'Folate',           unit: 'mcg',     group: 'vitamin', decay: 'daily' },
+  { key: 'choline', label: 'Choline',          unit: 'mg',      group: 'vitamin', decay: 'lookback' },
+];
+const NUTRIENT_KEYS = NUTRIENTS.map(n => n.key);
+const NUTRIENT_BY_KEY = Object.fromEntries(NUTRIENTS.map(n => [n.key, n]));
+const GROUP_LABELS = { macro: 'Macronutrients', mineral: 'Minerals', vitamin: 'Vitamins' };
+const GROUP_ORDER = ['macro', 'mineral', 'vitamin'];
+
+const CALCIUM_NOTE =
+  "Calcium is NOT modeled with decay or a rolling window like the other minerals. " +
+  "It's tightly hormonally regulated (parathyroid hormone, calcitonin, vitamin D) and " +
+  "buffered by bone stores, so short-term low intake doesn't produce a 'depleting level' " +
+  "the way it does for iron or vitamin D. Real calcium deficiency effects (bone density " +
+  "loss) develop over years, not days or weeks — this tool does not attempt to model or " +
+  "flag long-term calcium status. It's shown here against the daily RDA purely as an " +
+  "intake-tracking convenience, flagged below 70% like the daily-reset nutrients, but this " +
+  "does NOT reflect your actual body calcium status.";
+
+/* ============================================================================
+ * DECAY / LOOKBACK-WINDOW TABLE (class 3 nutrients)
+ * ----------------------------------------------------------------------------
+ * target = RDA x lookback window (days)
+ * running level = sum of intake within the window, weighted by
+ *   amount * 0.5 ^ (elapsedDays / halfLife)     (smooth exponential fade,
+ *   not a hard cliff at the window edge)
+ *
+ * Default half-life = window / 2, EXCEPT choline (explicit 7-day half-life,
+ * NOT derived from its 30-day window — choline turns over faster than the
+ * mineral-default group despite sharing their window length).
+ *
+ * basis: 'sourced'            = grounded in cited pharmacokinetic data
+ *        'sourced-ambiguous'  = sourced but the source itself is ambiguous/contested
+ *        'unsourced-default'  = no turnover data found; shared estimate placeholder
+ *        'estimated-override' = explicit estimate overriding the window/2 default
+ * ========================================================================= */
+const LOOKBACK_TABLE = {
+  vitD:       { window: 60,  halfLife: 30,  basis: 'sourced',
+                note: '25(OH)D plasma half-life ~15-21 days' },
+  vitA:       { window: 180, halfLife: 90,  basis: 'sourced',
+                note: 'Liver reserve up to ~1yr; conservative half of window used' },
+  vitK:       { window: 5,   halfLife: 2.5, basis: 'sourced',
+                note: 'Minimal storage, ~1.5-day body pool turnover' },
+  vitE:       { window: 21,  halfLife: 10.5, basis: 'sourced-ambiguous',
+                note: 'Plasma half-life ~3 days vs. longer adipose storage' },
+  iron:       { window: 90,  halfLife: 45,  basis: 'sourced',
+                note: 'Store depletion/repletion is a documented 3-6 month process' },
+  zinc:       { window: 21,  halfLife: 10.5, basis: 'sourced-ambiguous',
+                note: 'Plasma pool turns over in ~2 days, but most body zinc is in slower muscle/bone' },
+  magnesium:  { window: 30,  halfLife: 15,  basis: 'unsourced-default',
+                note: 'Shared default for minerals lacking turnover data' },
+  phosphorus: { window: 30,  halfLife: 15,  basis: 'unsourced-default',
+                note: 'Shared default for minerals lacking turnover data' },
+  copper:     { window: 30,  halfLife: 15,  basis: 'unsourced-default',
+                note: 'Shared default for minerals lacking turnover data' },
+  manganese:  { window: 30,  halfLife: 15,  basis: 'unsourced-default',
+                note: 'Shared default for minerals lacking turnover data' },
+  selenium:   { window: 30,  halfLife: 15,  basis: 'unsourced-default',
+                note: 'Shared default for minerals lacking turnover data' },
+  choline:    { window: 30,  halfLife: 7,   basis: 'estimated-override',
+                note: 'Explicit override — faster turnover than the mineral-default group despite the same window' },
+};
+const BASIS_LABEL = {
+  'sourced': 'sourced',
+  'sourced-ambiguous': 'sourced, ambiguous',
+  'unsourced-default': 'estimate',
+  'estimated-override': 'estimate',
+};
+
+const DAILY_FLAG_THRESHOLD = 0.70;
+const LOOKBACK_FLAG_THRESHOLD = 0.60;
+
+/* ============================================================================
+ * RDA / AI TARGET CALCULATION
+ * ----------------------------------------------------------------------------
+ * Sources: NIH Office of Dietary Supplements (ods.od.nih.gov) fact sheets and
+ * nutrient recommendation tables, which summarize the National Academies'
+ * Dietary Reference Intake (DRI) reports. Calorie/macro formulas as noted
+ * inline. All values are adult (19+) DRIs; age is clamped to 19 for bracket
+ * lookups (this tool is not intended for pediatric use).
+ * ========================================================================= */
+function ageBracket(age) {
+  const a = Math.max(19, age);
+  if (a <= 30) return '19-30';
+  if (a <= 50) return '31-50';
+  if (a <= 70) return '51-70';
+  return '70+';
+}
+
+function computeTargets(cfg) {
+  const age = Math.max(19, Number(cfg.age) || 19);
+  const sex = cfg.sex === 'female' ? 'female' : 'male';
+  const weight = Number(cfg.weightKg) || 70;
+  const height = Number(cfg.heightCm) || 170;
+  const bracket = ageBracket(age);
+  const isMale = sex === 'male';
+
+  // Mifflin-St Jeor equation (BMR), then scaled by activity factor -> TDEE.
+  const bmr = isMale
+    ? 10 * weight + 6.25 * height - 5 * age + 5
+    : 10 * weight + 6.25 * height - 5 * age - 161;
+  const ACTIVITY_MULT = { sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725 };
+  const calories = bmr * (ACTIVITY_MULT[cfg.activityLevel] || ACTIVITY_MULT.sedentary);
+
+  // Macronutrient targets derived from calories (AMDR midpoints / DGA limits).
+  const protein = 0.8 * weight; // NIH ODS: 0.8 g/kg/day adult RDA
+  const fat = (0.30 * calories) / 9; // AMDR 20-35%, midpoint 30%
+  const satfat = (0.10 * calories) / 9; // DGA: <10% of calories (an upper limit, not a depletion target)
+  const carbs = (0.50 * calories) / 4; // AMDR 45-65%, midpoint 50%
+  const sugar = (0.10 * calories) / 4; // DGA/AHA: added sugar <10% of calories (an upper limit)
+  const fiber = age <= 50 ? (isMale ? 38 : 25) : (isMale ? 30 : 21); // IOM AI, g/day
+
+  // Sodium: AI (not a "reach this" target — sodium AI is a minimum adequacy
+  // value, most diets exceed it easily; the daily-reset "flag if <70%" logic
+  // is applied uniformly per spec but is not a meaningful deficiency signal
+  // for sodium in practice).
+  const sodium = bracket === '19-30' || bracket === '31-50' ? 1500 : bracket === '51-70' ? 1300 : 1200;
+  const potassium = isMale ? 3400 : 2600; // NASEM 2019 AI
+
+  // Calcium RDA (mg/day)
+  let calcium;
+  if (bracket === '19-30' || bracket === '31-50') calcium = 1000;
+  else if (bracket === '51-70') calcium = isMale ? 1000 : 1200;
+  else calcium = 1200;
+
+  // Iron RDA (mg/day) - differs by sex due to menstrual losses until ~51-70 bracket
+  const iron = isMale ? 8 : (bracket === '19-30' || bracket === '31-50' ? 18 : 8);
+
+  // Magnesium RDA (mg/day)
+  const magnesium = isMale
+    ? (bracket === '19-30' ? 400 : 420)
+    : (bracket === '19-30' ? 310 : 320);
+
+  const zinc = isMale ? 11 : 8; // RDA mg/day
+  const phosphorus = 700; // RDA mg/day, flat adult
+  const copper = 0.9; // RDA mg/day, flat adult
+  const manganese = isMale ? 2.3 : 1.8; // AI mg/day
+  const selenium = 55; // RDA mcg/day, flat adult
+
+  const vitA = isMale ? 900 : 700; // RDA mcg RAE/day
+  const vitC = isMale ? 90 : 75; // RDA mg/day
+  const vitD = (bracket === '70+') ? 20 : 15; // RDA mcg/day (600 vs 800 IU)
+  const vitE = 15; // RDA mg/day, flat adult
+  const vitK = isMale ? 120 : 90; // AI mcg/day
+
+  const b1 = isMale ? 1.2 : 1.1; // Thiamin RDA mg/day
+  const b2 = isMale ? 1.3 : 1.1; // Riboflavin RDA mg/day
+  const b3 = isMale ? 16 : 14; // Niacin RDA mg NE/day
+  const b6 = (bracket === '19-30' || bracket === '31-50') ? 1.3 : (isMale ? 1.7 : 1.5); // RDA mg/day
+  const b12 = 2.4; // RDA mcg/day, flat adult
+  const folate = 400; // RDA mcg DFE/day, flat adult
+  const choline = isMale ? 550 : 425; // AI mg/day
+
+  const rdaDaily = {
+    kcal: calories, protein, fat, satfat, carbs, fiber, sugar,
+    sodium, potassium, calcium, iron, magnesium, zinc, phosphorus, copper, manganese, selenium,
+    vitA, vitC, vitD, vitE, vitK, b1, b2, b3, b6, b12, folate, choline,
+  };
+
+  const targets = {};
+  NUTRIENTS.forEach(n => {
+    const rda = rdaDaily[n.key];
+    if (n.decay === 'lookback') {
+      targets[n.key] = { rda, target: rda * LOOKBACK_TABLE[n.key].window };
+    } else {
+      targets[n.key] = { rda, target: rda };
+    }
+  });
+  return targets;
+}
+
+/* ============================================================================
+ * SEED FOOD DATABASE (~100 foods, values per 100g)
+ * ----------------------------------------------------------------------------
+ * Approximate figures in the style of USDA FoodData Central (FDC), entered
+ * from general nutrition-science knowledge rather than a live FDC API fetch.
+ * Treat these as reasonable estimates for personal tracking, NOT lab-grade
+ * precision — spot-check anything nutrient-critical against FDC directly
+ * (fdc.nal.usda.gov). Unlisted/uncertain nutrients are left as `null`
+ * ("no data") rather than defaulted to 0 ("no content").
+ * ========================================================================= */
+function mkFood(id, name, vals) {
+  const nutrients = {};
+  NUTRIENT_KEYS.forEach(k => { nutrients[k] = (vals[k] === undefined ? null : vals[k]); });
+  return { id, name, source: 'seed', nutrients };
+}
+
+const SEED_FOODS = [
+  mkFood('f1', 'Banana, raw', { kcal:89, protein:1.1, fat:0.3, satfat:0.1, carbs:22.8, fiber:2.6, sugar:12.2, sodium:1, potassium:358, calcium:5, iron:0.26, magnesium:27, zinc:0.15, vitC:8.7, b6:0.37, folate:20, vitK:0.5, manganese:0.27 }),
+  mkFood('f2', 'Apple, raw, with skin', { kcal:52, protein:0.3, fat:0.2, satfat:0, carbs:13.8, fiber:2.4, sugar:10.4, sodium:1, potassium:107, calcium:6, iron:0.12, magnesium:5, vitC:4.6, vitK:2.2 }),
+  mkFood('f3', 'Orange, raw', { kcal:47, protein:0.9, fat:0.1, satfat:0, carbs:11.8, fiber:2.4, sugar:9.4, sodium:0, potassium:181, calcium:40, iron:0.1, magnesium:10, vitC:53.2, folate:30, b1:0.09 }),
+  mkFood('f4', 'Strawberries, raw', { kcal:32, protein:0.7, fat:0.3, satfat:0, carbs:7.7, fiber:2, sugar:4.9, sodium:1, potassium:153, calcium:16, iron:0.41, magnesium:13, vitC:58.8, folate:24, manganese:0.39 }),
+  mkFood('f5', 'Blueberries, raw', { kcal:57, protein:0.7, fat:0.3, satfat:0, carbs:14.5, fiber:2.4, sugar:10, sodium:1, potassium:77, calcium:6, iron:0.28, magnesium:6, vitC:9.7, vitK:19.3, manganese:0.34 }),
+  mkFood('f6', 'Grapes, raw', { kcal:69, protein:0.7, fat:0.2, satfat:0.1, carbs:18.1, fiber:0.9, sugar:15.5, sodium:2, potassium:191, calcium:10, iron:0.36, vitC:3.2, vitK:14.6 }),
+  mkFood('f7', 'Avocado, raw', { kcal:160, protein:2, fat:14.7, satfat:2.1, carbs:8.5, fiber:6.7, sugar:0.7, sodium:7, potassium:485, calcium:12, iron:0.55, magnesium:29, zinc:0.64, vitC:10, vitE:2.07, vitK:21, folate:81, b6:0.26 }),
+  mkFood('f8', 'Watermelon, raw', { kcal:30, protein:0.6, fat:0.2, satfat:0, carbs:7.6, fiber:0.4, sugar:6.2, sodium:1, potassium:112, calcium:7, vitC:8.1, vitA:28 }),
+  mkFood('f9', 'Mango, raw', { kcal:60, protein:0.8, fat:0.4, satfat:0.1, carbs:15, fiber:1.6, sugar:13.7, sodium:1, potassium:168, calcium:11, vitC:36.4, vitA:54, folate:43 }),
+  mkFood('f10', 'Pineapple, raw', { kcal:50, protein:0.5, fat:0.1, satfat:0, carbs:13.1, fiber:1.4, sugar:9.9, sodium:1, potassium:109, calcium:13, vitC:47.8, manganese:0.93 }),
+  mkFood('f11', 'Pear, raw', { kcal:57, protein:0.4, fat:0.1, satfat:0, carbs:15.2, fiber:3.1, sugar:9.8, sodium:1, potassium:116, calcium:9, vitC:4.3, vitK:4.4 }),
+  mkFood('f12', 'Peach, raw', { kcal:39, protein:0.9, fat:0.25, satfat:0, carbs:9.5, fiber:1.5, sugar:8.4, sodium:0, potassium:190, calcium:6, vitC:6.6, vitA:16 }),
+  mkFood('f13', 'Broccoli, raw', { kcal:34, protein:2.8, fat:0.4, satfat:0.1, carbs:6.6, fiber:2.6, sugar:1.7, sodium:33, potassium:316, calcium:47, iron:0.73, magnesium:21, zinc:0.41, vitC:89.2, vitA:31, vitK:102, folate:63, manganese:0.21 }),
+  mkFood('f14', 'Spinach, raw', { kcal:23, protein:2.9, fat:0.4, satfat:0.1, carbs:3.6, fiber:2.2, sugar:0.4, sodium:79, potassium:558, calcium:99, iron:2.71, magnesium:79, vitA:469, vitC:28.1, vitK:483, folate:194, manganese:0.9 }),
+  mkFood('f15', 'Kale, raw', { kcal:49, protein:4.3, fat:0.9, satfat:0.1, carbs:8.8, fiber:3.6, sugar:2.3, sodium:38, potassium:491, calcium:150, iron:1.47, magnesium:33, vitA:500, vitC:120, vitK:705, folate:141 }),
+  mkFood('f16', 'Carrot, raw', { kcal:41, protein:0.9, fat:0.2, satfat:0, carbs:9.6, fiber:2.8, sugar:4.7, sodium:69, potassium:320, calcium:33, iron:0.3, magnesium:12, vitA:835, vitC:5.9, vitK:13.2 }),
+  mkFood('f17', 'Sweet potato, baked', { kcal:90, protein:2, fat:0.2, satfat:0, carbs:20.7, fiber:3.3, sugar:6.5, sodium:36, potassium:475, calcium:38, iron:0.69, magnesium:27, vitA:961, vitC:19.6, vitK:1.8, b6:0.28 }),
+  mkFood('f18', 'Potato, baked, with skin', { kcal:93, protein:2.5, fat:0.1, satfat:0, carbs:21.1, fiber:2.2, sugar:1.2, sodium:6, potassium:535, calcium:15, iron:1.08, magnesium:28, vitC:9.6, b6:0.33 }),
+  mkFood('f19', 'Tomato, raw', { kcal:18, protein:0.9, fat:0.2, satfat:0, carbs:3.9, fiber:1.2, sugar:2.6, sodium:5, potassium:237, calcium:10, iron:0.27, vitC:13.7, vitA:42, vitK:7.9 }),
+  mkFood('f20', 'Bell pepper, red, raw', { kcal:31, protein:1, fat:0.3, satfat:0, carbs:6, fiber:2.1, sugar:4.2, sodium:4, potassium:211, calcium:7, vitC:127.7, vitA:157 }),
+  mkFood('f21', 'Onion, raw', { kcal:40, protein:1.1, fat:0.1, satfat:0, carbs:9.3, fiber:1.7, sugar:4.2, sodium:4, potassium:146, calcium:23, vitC:7.4, folate:19 }),
+  mkFood('f22', 'Garlic, raw', { kcal:149, protein:6.4, fat:0.5, satfat:0.1, carbs:33.1, fiber:2.1, sugar:1, sodium:17, potassium:401, calcium:181, iron:1.7, magnesium:25, vitC:31.2, manganese:1.67, selenium:14.2, b6:1.24 }),
+  mkFood('f23', 'Cucumber, raw', { kcal:15, protein:0.7, fat:0.1, satfat:0, carbs:3.6, fiber:0.5, sugar:1.7, sodium:2, potassium:147, calcium:16, vitC:2.8, vitK:16.4 }),
+  mkFood('f24', 'Green beans, raw', { kcal:31, protein:1.8, fat:0.2, satfat:0, carbs:7, fiber:3.4, sugar:3.3, sodium:6, potassium:211, calcium:37, iron:1.03, vitC:12.2, vitA:35, vitK:43 }),
+  mkFood('f25', 'Brussels sprouts, raw', { kcal:43, protein:3.4, fat:0.3, satfat:0.1, carbs:9, fiber:3.8, sugar:2.2, sodium:25, potassium:389, calcium:42, vitC:85, vitK:177, folate:61 }),
+  mkFood('f26', 'Mushrooms, raw', { kcal:22, protein:3.1, fat:0.3, satfat:0, carbs:3.3, fiber:1, sugar:2, sodium:5, potassium:318, calcium:3, selenium:9.3, b2:0.4, b3:3.6, vitD:0.2 }),
+  mkFood('f27', 'Lentils, cooked', { kcal:116, protein:9, fat:0.4, satfat:0.1, carbs:20.1, fiber:7.9, sugar:1.8, sodium:2, potassium:369, calcium:19, iron:3.3, magnesium:36, zinc:1.27, folate:181, manganese:0.49 }),
+  mkFood('f28', 'Chickpeas, cooked', { kcal:164, protein:8.9, fat:2.6, satfat:0.3, carbs:27.4, fiber:7.6, sugar:4.8, sodium:7, potassium:291, calcium:49, iron:2.89, magnesium:48, zinc:1.53, folate:172, manganese:1.03 }),
+  mkFood('f29', 'Black beans, cooked', { kcal:132, protein:8.9, fat:0.5, satfat:0.1, carbs:23.7, fiber:8.7, sugar:0.3, sodium:1, potassium:355, calcium:27, iron:2.1, magnesium:70, folate:149, manganese:0.55 }),
+  mkFood('f30', 'Kidney beans, cooked', { kcal:127, protein:8.7, fat:0.5, satfat:0.1, carbs:22.8, fiber:6.4, sugar:0.3, sodium:2, potassium:403, calcium:28, iron:2.94, magnesium:45, folate:130 }),
+  mkFood('f31', 'Peanuts, raw', { kcal:567, protein:25.8, fat:49.2, satfat:6.8, carbs:16.1, fiber:8.5, sugar:4.7, sodium:18, potassium:705, calcium:92, iron:4.58, magnesium:168, zinc:3.27, vitE:8.33, folate:240, b3:12.07, manganese:1.93 }),
+  mkFood('f32', 'Tofu, firm', { kcal:144, protein:15.8, fat:8.7, satfat:1.3, carbs:2.8, fiber:1.2, sugar:0.6, sodium:14, potassium:121, calcium:350, iron:2.66, magnesium:37, zinc:1.57, manganese:0.61 }),
+  mkFood('f33', 'Edamame, cooked', { kcal:121, protein:11.9, fat:5.2, satfat:0.6, carbs:8.9, fiber:5.2, sugar:2.2, sodium:6, potassium:436, calcium:63, iron:2.3, magnesium:64, folate:311, vitK:25.5 }),
+  mkFood('f34', 'Green peas, cooked', { kcal:84, protein:5.4, fat:0.2, satfat:0, carbs:15.6, fiber:5.7, sugar:5.9, sodium:3, potassium:147, calcium:27, iron:1.5, vitC:14.2, vitK:24.8, folate:65 }),
+  mkFood('f35', 'White rice, cooked', { kcal:130, protein:2.7, fat:0.3, satfat:0.1, carbs:28.2, fiber:0.4, sugar:0.1, sodium:1, potassium:35, calcium:10, iron:1.2, manganese:0.51 }),
+  mkFood('f36', 'Brown rice, cooked', { kcal:112, protein:2.6, fat:0.9, satfat:0.2, carbs:23.5, fiber:1.8, sugar:0.4, sodium:1, potassium:43, magnesium:39, zinc:0.63, manganese:0.86, b1:0.1, b6:0.12 }),
+  mkFood('f37', 'Oats, dry', { kcal:389, protein:16.9, fat:6.9, satfat:1.2, carbs:66.3, fiber:10.6, sugar:0, sodium:2, potassium:429, calcium:54, iron:4.72, magnesium:177, zinc:3.97, manganese:4.9, b1:0.76 }),
+  mkFood('f38', 'Quinoa, cooked', { kcal:120, protein:4.4, fat:1.9, satfat:0.2, carbs:21.3, fiber:2.8, sugar:0.9, sodium:7, potassium:172, calcium:17, iron:1.49, magnesium:64, zinc:1.09, folate:42, manganese:0.63 }),
+  mkFood('f39', 'Whole wheat bread', { kcal:247, protein:13, fat:3.4, satfat:0.6, carbs:41.3, fiber:6, sugar:4.3, sodium:472, potassium:230, calcium:107, iron:2.5, magnesium:82, manganese:2.15, b1:0.19, folate:33 }),
+  mkFood('f40', 'White bread', { kcal:265, protein:9, fat:3.2, satfat:0.7, carbs:49, fiber:2.7, sugar:5, sodium:491, potassium:115, calcium:151, iron:3.6, folate:100 }),
+  mkFood('f41', 'Pasta, cooked', { kcal:131, protein:5.1, fat:1.1, satfat:0.2, carbs:25, fiber:1.3, sugar:0.6, sodium:1, potassium:44, iron:0.98, manganese:0.5 }),
+  mkFood('f42', 'Corn, cooked', { kcal:96, protein:3.4, fat:1.5, satfat:0.2, carbs:21, fiber:2.4, sugar:4.5, sodium:15, potassium:270, calcium:2, vitC:6.8, folate:42, b1:0.16 }),
+  mkFood('f43', 'Barley, cooked', { kcal:123, protein:2.3, fat:0.4, satfat:0.1, carbs:28.2, fiber:3.8, sugar:0.3, sodium:3, potassium:93, magnesium:22, manganese:0.42 }),
+  mkFood('f44', 'Couscous, cooked', { kcal:112, protein:3.8, fat:0.2, satfat:0, carbs:23.2, fiber:1.4, sugar:0.1, sodium:5, potassium:58, selenium:30.5 }),
+  mkFood('f45', 'Almonds, raw', { kcal:579, protein:21.2, fat:49.9, satfat:3.8, carbs:21.6, fiber:12.5, sugar:4.4, sodium:1, potassium:733, calcium:269, iron:3.71, magnesium:270, zinc:3.12, vitE:25.6, manganese:2.18, b2:1.14 }),
+  mkFood('f46', 'Walnuts, raw', { kcal:654, protein:15.2, fat:65.2, satfat:6.1, carbs:13.7, fiber:6.7, sugar:2.6, sodium:2, potassium:441, calcium:98, iron:2.91, magnesium:158, zinc:3.09, vitE:0.7, folate:98, manganese:3.4 }),
+  mkFood('f47', 'Cashews, raw', { kcal:553, protein:18.2, fat:43.9, satfat:7.8, carbs:30.2, fiber:3.3, sugar:5.9, sodium:12, potassium:660, calcium:37, iron:6.68, magnesium:292, zinc:5.78, copper:2.2, manganese:1.66 }),
+  mkFood('f48', 'Peanut butter', { kcal:588, protein:25, fat:50, satfat:10.3, carbs:20, fiber:6, sugar:9.2, sodium:459, potassium:649, calcium:49, iron:1.87, magnesium:168, zinc:2.51, b3:13.3 }),
+  mkFood('f49', 'Chia seeds', { kcal:486, protein:16.5, fat:30.7, satfat:3.3, carbs:42.1, fiber:34.4, sugar:0, sodium:16, potassium:407, calcium:631, iron:7.72, magnesium:335, zinc:4.58, manganese:2.72 }),
+  mkFood('f50', 'Flaxseed, ground', { kcal:534, protein:18.3, fat:42.2, satfat:3.7, carbs:28.9, fiber:27.3, sugar:1.6, sodium:30, potassium:813, calcium:255, iron:5.73, magnesium:392, zinc:4.34, manganese:2.48, b1:1.64 }),
+  mkFood('f51', 'Sunflower seeds', { kcal:584, protein:20.8, fat:51.5, satfat:4.5, carbs:20, fiber:8.6, sugar:2.6, sodium:9, potassium:645, calcium:78, iron:5.25, magnesium:325, zinc:5, vitE:35.2, selenium:53, folate:227 }),
+  mkFood('f52', 'Pumpkin seeds', { kcal:559, protein:30.2, fat:49.1, satfat:8.7, carbs:10.7, fiber:6, sugar:1.4, sodium:7, potassium:809, calcium:46, iron:8.82, magnesium:592, zinc:7.64, manganese:4.5 }),
+  mkFood('f53', 'Whole milk', { kcal:61, protein:3.2, fat:3.3, satfat:1.9, carbs:4.8, fiber:0, sugar:5.1, sodium:43, potassium:150, calcium:113, vitD:1.3, vitA:46, b2:0.18, b12:0.45 }),
+  mkFood('f54', 'Skim milk', { kcal:34, protein:3.4, fat:0.1, satfat:0.1, carbs:5, fiber:0, sugar:5, sodium:42, potassium:156, calcium:122, vitD:1.3, b2:0.18, b12:0.45 }),
+  mkFood('f55', 'Greek yogurt, plain', { kcal:59, protein:10, fat:0.4, satfat:0.1, carbs:3.6, fiber:0, sugar:3.2, sodium:36, potassium:141, calcium:110, b2:0.28, b12:0.75 }),
+  mkFood('f56', 'Cheddar cheese', { kcal:403, protein:25, fat:33.1, satfat:21, carbs:1.3, fiber:0, sugar:0.5, sodium:621, potassium:98, calcium:721, zinc:3.11, vitA:265, b12:0.83, phosphorus:512 }),
+  mkFood('f57', 'Mozzarella cheese', { kcal:280, protein:28, fat:17, satfat:10.9, carbs:2.2, fiber:0, sugar:1, sodium:627, potassium:95, calcium:505, phosphorus:354, vitA:179 }),
+  mkFood('f58', 'Cottage cheese', { kcal:98, protein:11.1, fat:4.3, satfat:2.7, carbs:3.4, fiber:0, sugar:2.7, sodium:364, potassium:104, calcium:83, vitA:37 }),
+  mkFood('f59', 'Butter', { kcal:717, protein:0.9, fat:81.1, satfat:51.4, carbs:0.1, fiber:0, sugar:0.1, sodium:11, potassium:24, calcium:24, vitA:684, vitD:1.5, vitE:2.32, vitK:7 }),
+  mkFood('f60', 'Egg, whole, raw', { kcal:143, protein:12.6, fat:9.5, satfat:3.1, carbs:0.7, fiber:0, sugar:0.4, sodium:142, potassium:138, calcium:56, iron:1.75, selenium:30.7, vitA:160, vitD:2, b12:0.89, choline:294, folate:47, b2:0.46 }),
+  mkFood('f61', 'Egg white', { kcal:52, protein:10.9, fat:0.2, satfat:0, carbs:0.7, fiber:0, sugar:0.7, sodium:166, potassium:163, calcium:7, selenium:20.2, b2:0.44 }),
+  mkFood('f62', 'Parmesan cheese', { kcal:431, protein:38, fat:29, satfat:19.1, carbs:4.1, fiber:0, sugar:0.9, sodium:1529, potassium:92, calcium:1184, phosphorus:694, zinc:2.75 }),
+  mkFood('f63', 'Chicken breast, cooked', { kcal:165, protein:31, fat:3.6, satfat:1, carbs:0, fiber:0, sugar:0, sodium:74, potassium:256, iron:1, zinc:1, phosphorus:210, b3:13.7, b6:0.6, selenium:27.6, b12:0.3 }),
+  mkFood('f64', 'Chicken thigh, cooked', { kcal:209, protein:26, fat:10.9, satfat:3, carbs:0, fiber:0, sugar:0, sodium:90, potassium:229, iron:1.3, zinc:2.35, b3:5.6 }),
+  mkFood('f65', 'Ground beef 85/15, cooked', { kcal:250, protein:25.9, fat:17, satfat:6.6, carbs:0, fiber:0, sugar:0, sodium:72, potassium:270, iron:2.3, zinc:5.3, b12:2.5, b3:4.6, selenium:18.5 }),
+  mkFood('f66', 'Beef sirloin, cooked', { kcal:183, protein:28.7, fat:6.9, satfat:2.7, carbs:0, fiber:0, sugar:0, sodium:56, potassium:344, iron:2.28, zinc:4.4, b12:2.4, b6:0.55 }),
+  mkFood('f67', 'Pork chop, cooked', { kcal:231, protein:25.7, fat:13.5, satfat:4.8, carbs:0, fiber:0, sugar:0, sodium:57, potassium:372, iron:0.83, zinc:2.09, b1:0.72, b6:0.46, b12:0.7 }),
+  mkFood('f68', 'Bacon, cooked', { kcal:541, protein:37, fat:42, satfat:14, carbs:1.4, fiber:0, sugar:0, sodium:1717, potassium:565, iron:1.28, zinc:2.5 }),
+  mkFood('f69', 'Turkey breast, cooked', { kcal:135, protein:30.1, fat:0.7, satfat:0.2, carbs:0, fiber:0, sugar:0, sodium:63, potassium:249, zinc:1.1, b3:7.2, b6:0.55, selenium:27.6 }),
+  mkFood('f70', 'Lamb, cooked', { kcal:258, protein:25.6, fat:16.5, satfat:7, carbs:0, fiber:0, sugar:0, sodium:72, potassium:310, iron:1.9, zinc:4.5, b12:2.7 }),
+  mkFood('f71', 'Beef liver, cooked', { kcal:175, protein:26.5, fat:4.9, satfat:1.9, carbs:3.9, fiber:0, sugar:0, sodium:69, potassium:299, iron:5.99, zinc:4.75, vitA:9442, b12:59.3, folate:217, copper:9.75, selenium:39.7, b2:2.92, b3:12.6 }),
+  mkFood('f72', 'Ham', { kcal:145, protein:21, fat:5.5, satfat:1.8, carbs:1.5, fiber:0, sugar:1, sodium:1203, potassium:350, zinc:2, b1:0.6 }),
+  mkFood('f73', 'Salmon, cooked', { kcal:206, protein:22.1, fat:12.4, satfat:2.5, carbs:0, fiber:0, sugar:0, sodium:61, potassium:384, calcium:9, iron:0.34, vitD:11.1, b12:3.18, selenium:36.5, b3:8.5 }),
+  mkFood('f74', 'Tuna, canned in water', { kcal:116, protein:25.5, fat:0.8, satfat:0.2, carbs:0, fiber:0, sugar:0, sodium:247, potassium:237, selenium:80.4, vitD:1, b12:1.3, b3:11.5 }),
+  mkFood('f75', 'Shrimp, cooked', { kcal:99, protein:24, fat:0.3, satfat:0.1, carbs:0.2, fiber:0, sugar:0, sodium:111, potassium:259, iron:0.5, zinc:1.6, selenium:38, b12:1.3, copper:0.19 }),
+  mkFood('f76', 'Cod, cooked', { kcal:105, protein:23, fat:0.9, satfat:0.2, carbs:0, fiber:0, sugar:0, sodium:78, potassium:244, selenium:32.7, b12:1.2 }),
+  mkFood('f77', 'Sardines, canned', { kcal:208, protein:24.6, fat:11.5, satfat:1.5, carbs:0, fiber:0, sugar:0, sodium:307, potassium:397, calcium:382, iron:2.92, vitD:4.8, b12:8.94, selenium:52.7 }),
+  mkFood('f78', 'Tilapia, cooked', { kcal:128, protein:26, fat:2.7, satfat:0.9, carbs:0, fiber:0, sugar:0, sodium:56, potassium:380, selenium:54.4, b12:1.9, b3:4.7 }),
+  mkFood('f79', 'Mackerel, cooked', { kcal:262, protein:23.9, fat:17.8, satfat:4.2, carbs:0, fiber:0, sugar:0, sodium:90, potassium:314, vitD:16.1, b12:8.71, selenium:44.1 }),
+  mkFood('f80', 'Crab, cooked', { kcal:97, protein:19.4, fat:1.5, satfat:0.2, carbs:0, fiber:0, sugar:0, sodium:293, potassium:262, zinc:4.03, copper:0.6, b12:9.78, selenium:39.2 }),
+  mkFood('f81', 'Olive oil', { kcal:884, protein:0, fat:100, satfat:13.8, carbs:0, fiber:0, sugar:0, sodium:2, potassium:1, vitE:14.4, vitK:60.2 }),
+  mkFood('f82', 'Coconut oil', { kcal:862, protein:0, fat:100, satfat:82.5, carbs:0, fiber:0, sugar:0, sodium:0, potassium:0 }),
+  mkFood('f83', 'Mayonnaise', { kcal:680, protein:1, fat:75, satfat:11.4, carbs:0.6, fiber:0, sugar:0.6, sodium:635, vitE:8, vitK:68.9 }),
+  mkFood('f84', 'Orange juice', { kcal:45, protein:0.7, fat:0.2, satfat:0, carbs:10.4, fiber:0.2, sugar:8.4, sodium:1, potassium:200, calcium:11, vitC:50, folate:30 }),
+  mkFood('f85', 'Coffee, black', { kcal:2, protein:0.3, fat:0, satfat:0, carbs:0, fiber:0, sugar:0, sodium:2, potassium:49, magnesium:3.3 }),
+  mkFood('f86', 'Black tea', { kcal:1, protein:0, fat:0, satfat:0, carbs:0.3, fiber:0, sugar:0, sodium:3, potassium:8 }),
+  mkFood('f87', 'Soy milk, unfortified', { kcal:54, protein:3.3, fat:1.8, satfat:0.2, carbs:6.3, fiber:0.6, sugar:4.4, sodium:51, potassium:118 }),
+  mkFood('f88', 'Dark chocolate, 70-85% cacao', { kcal:598, protein:7.8, fat:42.6, satfat:24.5, carbs:45.9, fiber:10.9, sugar:24, sodium:20, potassium:715, iron:11.9, magnesium:228, copper:1.77, manganese:1.94, zinc:3.34 }),
+  mkFood('f89', 'Milk chocolate', { kcal:535, protein:7.7, fat:29.7, satfat:18.5, carbs:59.4, fiber:3.4, sugar:51.5, sodium:79, potassium:372, calcium:189 }),
+  mkFood('f90', 'Honey', { kcal:304, protein:0.3, fat:0, satfat:0, carbs:82.4, fiber:0.2, sugar:82.1, sodium:4, potassium:52, vitC:0.5 }),
+  mkFood('f91', 'White sugar', { kcal:387, protein:0, fat:0, satfat:0, carbs:100, fiber:0, sugar:100, sodium:1, potassium:2 }),
+  mkFood('f92', 'Potato chips', { kcal:536, protein:7, fat:34.6, satfat:10.2, carbs:52.9, fiber:4.4, sugar:0.5, sodium:525, potassium:1275 }),
+  mkFood('f93', 'Popcorn, air-popped', { kcal:387, protein:12.9, fat:4.5, satfat:0.6, carbs:78, fiber:14.5, sugar:0.9, sodium:8, potassium:329, magnesium:144, manganese:1.5 }),
+  mkFood('f94', 'Cauliflower, raw', { kcal:25, protein:1.9, fat:0.3, satfat:0.1, carbs:5, fiber:2, sugar:1.9, sodium:30, potassium:299, calcium:22, vitC:48.2, vitK:15.5, folate:57 }),
+  mkFood('f95', 'Zucchini, raw', { kcal:17, protein:1.2, fat:0.3, satfat:0.1, carbs:3.1, fiber:1, sugar:2.5, sodium:8, potassium:261, calcium:16, vitC:17.9, vitA:10 }),
+  mkFood('f96', 'Asparagus, raw', { kcal:20, protein:2.2, fat:0.1, satfat:0, carbs:3.9, fiber:2.1, sugar:1.9, sodium:2, potassium:202, calcium:24, iron:2.14, vitA:38, vitC:5.6, vitK:41.6, folate:52 }),
+  mkFood('f97', 'Cabbage, raw', { kcal:25, protein:1.3, fat:0.1, satfat:0, carbs:5.8, fiber:2.5, sugar:3.2, sodium:18, potassium:170, calcium:40, vitC:36.6, vitK:76 }),
+  mkFood('f98', 'Celery, raw', { kcal:16, protein:0.7, fat:0.2, satfat:0, carbs:3, fiber:1.6, sugar:1.3, sodium:80, potassium:260, calcium:40, vitK:29.3, folate:36 }),
+  mkFood('f99', 'Lettuce, romaine, raw', { kcal:17, protein:1.2, fat:0.3, satfat:0, carbs:3.3, fiber:2.1, sugar:1.2, sodium:8, potassium:247, calcium:33, vitA:436, vitC:4, vitK:102.5, folate:136 }),
+  mkFood('f100', 'Kiwi, raw', { kcal:61, protein:1.1, fat:0.5, satfat:0, carbs:14.7, fiber:3, sugar:9, sodium:3, potassium:312, calcium:34, vitC:92.7, vitE:1.46, vitK:40.3, folate:25 }),
+];
+
+/* ============================================================================
+ * HOSTED PERSISTENCE
+ * ----------------------------------------------------------------------------
+ * This is the hosted companion to nutritool-local: same frontend, same
+ * nutrient/decay model, but the frontend talks to a SQLite-backed Flask API
+ * on a public (password-gated) server instead of a local JSON file. The
+ * request/response shape of /api/data is identical to nutritool-local's, so
+ * this whole file is otherwise unchanged from that project.
+ *
+ * Because the server is behind a login (see app.py), a 401/redirect here
+ * usually means the session expired -- send the user back to /login rather
+ * than showing a raw error.
+ * ========================================================================= */
+async function fetchData() {
+  const res = await fetch('/api/data');
+  if (res.status === 401 || res.redirected) {
+    window.location.href = '/login';
+    return new Promise(() => {}); // never resolves; navigation is underway
+  }
+  if (!res.ok) throw new Error('GET /api/data failed: ' + res.status);
+  return res.json();
+}
+
+async function saveData(partial) {
+  const res = await fetch('/api/data', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(partial),
+  });
+  if (res.status === 401 || res.redirected) {
+    window.location.href = '/login';
+    return new Promise(() => {});
+  }
+  if (!res.ok) throw new Error('POST /api/data failed: ' + res.status);
+  return res.json();
+}
+
+/* ============================================================================
+ * DECAY / LEVEL CALCULATIONS
+ * ========================================================================= */
+function sameLocalDay(ts, now) {
+  const a = new Date(ts), b = new Date(now);
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+function computeDailyLevel(entries, key, now) {
+  let total = 0;
+  for (const e of entries) {
+    if (!sameLocalDay(e.timestamp, now)) continue;
+    const amt = e.nutrients[key];
+    if (amt != null) total += amt;
+  }
+  return total;
+}
+
+function computeLookbackLevel(entries, key, now) {
+  const { halfLife } = LOOKBACK_TABLE[key];
+  let total = 0;
+  for (const e of entries) {
+    const amt = e.nutrients[key];
+    if (amt == null) continue;
+    const elapsedDays = (now - e.timestamp) / 86400000;
+    if (elapsedDays < 0) continue;
+    total += amt * Math.pow(0.5, elapsedDays / halfLife);
+  }
+  return total;
+}
+
+function computeAllLevels(entries, now) {
+  const levels = {};
+  NUTRIENTS.forEach(n => {
+    levels[n.key] = (n.decay === 'lookback')
+      ? computeLookbackLevel(entries, n.key, now)
+      : computeDailyLevel(entries, n.key, now);
+  });
+  return levels;
+}
+
+/* ============================================================================
+ * ENTRY <-> NUTRIENT SNAPSHOT HELPERS
+ * ========================================================================= */
+function scaleNutrients(per100g, grams) {
+  const out = {};
+  NUTRIENT_KEYS.forEach(k => {
+    const v = per100g[k];
+    out[k] = (v == null) ? null : (v * grams) / 100;
+  });
+  return out;
+}
+
+function fmtNum(v, unit) {
+  if (v == null) return '—';
+  const decimals = (unit === 'mg' || unit === 'g') ? (v < 10 ? 2 : 1) : (v < 10 ? 1 : 0);
+  return Number(v.toFixed(decimals)).toString();
+}
+
+/* ============================================================================
+ * UI COMPONENTS
+ * ========================================================================= */
+function Tooltip({ text }) {
+  return <span className="info-icon" title={text}>i</span>;
+}
+
+function NutrientRow({ nutrient, level, target, rda }) {
+  const isLookback = nutrient.decay === 'lookback';
+  const threshold = isLookback ? LOOKBACK_FLAG_THRESHOLD : DAILY_FLAG_THRESHOLD;
+  const pct = target > 0 ? (level / target) * 100 : 0;
+  const flagged = target > 0 && (level / target) < threshold;
+  const barClass = pct >= threshold * 100 ? 'ok' : (pct >= threshold * 100 * 0.5 ? 'warn' : 'bad');
+  const info = LOOKBACK_TABLE[nutrient.key];
+
+  return (
+    <div className="nutrient-row">
+      <div className="nutrient-name">
+        {nutrient.label}
+        {nutrient.decay === 'calcium' && <Tooltip text={CALCIUM_NOTE} />}
+        {isLookback && (
+          <span className="badge-tag" title={info.note}>
+            {info.window}d / {BASIS_LABEL[info.basis]}
+          </span>
+        )}
+      </div>
+      <div className="bar-track">
+        <div className={"bar-fill " + barClass} style={{ width: Math.min(100, pct) + '%' }} />
+      </div>
+      <div className="nutrient-values">
+        {fmtNum(level, nutrient.unit)} / {fmtNum(target, nutrient.unit)} {nutrient.unit}
+        {' '}({pct.toFixed(0)}%)
+      </div>
+      <div>
+        {flagged
+          ? <span className="flag-badge low">LOW</span>
+          : <span className="flag-badge ok"></span>}
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({ levels, targets }) {
+  const now = Date.now();
+  return (
+    <div className="panel">
+      <h2>Nutrient Dashboard</h2>
+      <div className="muted" style={{ marginBottom: 10 }}>
+        Macros / sodium / potassium / vitamin C / B-vitamins reset daily and are flagged below 70% of target.
+        Calcium is intake-only (no decay model) — see the info icon. All other minerals and fat-soluble
+        vitamins use a rolling exponential-decay window and are flagged below 60% of target.
+      </div>
+      {GROUP_ORDER.map(group => (
+        <div key={group}>
+          <div className="group-title">{GROUP_LABELS[group]}</div>
+          {NUTRIENTS.filter(n => n.group === group).map(n => (
+            <NutrientRow
+              key={n.key}
+              nutrient={n}
+              level={levels[n.key]}
+              target={targets[n.key].target}
+              rda={targets[n.key].rda}
+            />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FoodPicker({ foods, selectedId, onSelect }) {
+  const [query, setQuery] = useState('');
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return foods;
+    return foods.filter(f => f.name.toLowerCase().includes(q));
+  }, [foods, query]);
+
+  return (
+    <div>
+      <label>Search food</label>
+      <input
+        type="text"
+        placeholder="e.g. banana, chicken, almonds..."
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        style={{ width: '100%' }}
+      />
+      <div className="food-list">
+        {filtered.length === 0 && <div className="empty-state">No foods match "{query}"</div>}
+        {filtered.map(f => (
+          <div
+            key={f.id}
+            className={"food-item" + (f.id === selectedId ? ' selected' : '')}
+            onClick={() => onSelect(f.id)}
+          >
+            <span>{f.name}</span>
+            <span className="src">{f.source === 'custom' ? 'custom' : 'seed'}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LogEntryPanel({ foods, onLog }) {
+  const [selectedId, setSelectedId] = useState(null);
+  const [grams, setGrams] = useState(100);
+
+  const selectedFood = foods.find(f => f.id === selectedId);
+
+  const handleLog = () => {
+    if (!selectedFood || !grams || grams <= 0) return;
+    onLog(selectedFood, Number(grams));
+  };
+
+  return (
+    <div className="panel">
+      <h2>Log Food</h2>
+      <FoodPicker foods={foods} selectedId={selectedId} onSelect={setSelectedId} />
+      {selectedFood && (
+        <div style={{ marginTop: 10 }}>
+          <div className="muted">Selected: <strong>{selectedFood.name}</strong> (values per 100g)</div>
+          <label>Amount consumed (grams)</label>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={grams}
+            onChange={e => setGrams(e.target.value)}
+            style={{ width: 120 }}
+          />
+          <div className="quick-amounts">
+            {[50, 100, 150, 200, 250].map(g => (
+              <button key={g} className="secondary" onClick={() => setGrams(g)}>{g}g</button>
+            ))}
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <button onClick={handleLog}>Log {grams}g of {selectedFood.name}</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LogHistory({ entries, onDelete, onEditGrams }) {
+  const sorted = [...entries].sort((a, b) => b.timestamp - a.timestamp);
+  return (
+    <div className="panel">
+      <h2>Log History</h2>
+      {sorted.length === 0 && <div className="empty-state">No entries logged yet.</div>}
+      {sorted.length > 0 && (
+        <div>
+          <div className="log-row muted">
+            <div>Food</div><div>Grams</div><div>Logged at</div><div></div><div></div>
+          </div>
+          {sorted.map(e => (
+            <div className="log-row" key={e.id}>
+              <div>{e.foodName}</div>
+              <div>
+                <input
+                  type="number"
+                  min="0"
+                  value={e.grams}
+                  onChange={ev => onEditGrams(e.id, Number(ev.target.value))}
+                  style={{ width: 60 }}
+                />
+              </div>
+              <div className="muted">{new Date(e.timestamp).toLocaleString()}</div>
+              <div></div>
+              <div><button className="danger" onClick={() => onDelete(e.id)}>Delete</button></div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddFoodForm({ onAdd }) {
+  const [name, setName] = useState('');
+  const [vals, setVals] = useState({});
+
+  const setVal = (key, v) => setVals(prev => ({ ...prev, [key]: v === '' ? undefined : Number(v) }));
+
+  const handleSubmit = () => {
+    if (!name.trim()) return;
+    onAdd(name.trim(), vals);
+    setName('');
+    setVals({});
+  };
+
+  return (
+    <div className="panel">
+      <h2>Add Custom Food</h2>
+      <div className="muted" style={{ marginBottom: 8 }}>
+        Values are per 100g. Leave any field blank if unknown — it will be stored as "no data", not zero.
+      </div>
+      <label>Food name</label>
+      <input type="text" value={name} onChange={e => setName(e.target.value)} style={{ width: '100%' }} />
+      <div className="form-grid" style={{ marginTop: 10 }}>
+        {NUTRIENTS.map(n => (
+          <div key={n.key}>
+            <label>{n.label} ({n.unit})</label>
+            <input
+              type="number"
+              value={vals[n.key] === undefined ? '' : vals[n.key]}
+              onChange={e => setVal(n.key, e.target.value)}
+              style={{ width: '100%' }}
+            />
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <button onClick={handleSubmit}>Add Food</button>
+      </div>
+    </div>
+  );
+}
+
+function SettingsPanel({ config, onSave }) {
+  const [local, setLocal] = useState(config);
+  useEffect(() => setLocal(config), [config]);
+
+  const set = (k, v) => setLocal(prev => ({ ...prev, [k]: v }));
+
+  return (
+    <div className="panel">
+      <h2>Personalization Settings</h2>
+      <div className="muted" style={{ marginBottom: 8 }}>
+        Used to compute your personalized RDA/AI targets (Mifflin-St Jeor for calories, NIH ODS / DRI
+        tables for everything else). Changes apply immediately to the dashboard once saved.
+      </div>
+      <div className="form-grid">
+        <div>
+          <label>Age (years)</label>
+          <input type="number" min="19" value={local.age} onChange={e => set('age', Number(e.target.value))} />
+        </div>
+        <div>
+          <label>Sex</label>
+          <select value={local.sex} onChange={e => set('sex', e.target.value)}>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+          </select>
+        </div>
+        <div>
+          <label>Weight (kg)</label>
+          <input type="number" min="1" value={local.weightKg} onChange={e => set('weightKg', Number(e.target.value))} />
+        </div>
+        <div>
+          <label>Height (cm)</label>
+          <input type="number" min="1" value={local.heightCm} onChange={e => set('heightCm', Number(e.target.value))} />
+        </div>
+        <div>
+          <label>Activity level</label>
+          <select value={local.activityLevel} onChange={e => set('activityLevel', e.target.value)}>
+            <option value="sedentary">Sedentary (little/no exercise)</option>
+            <option value="light">Light (1-3 days/week)</option>
+            <option value="moderate">Moderate (3-5 days/week)</option>
+            <option value="active">Active (6-7 days/week)</option>
+          </select>
+        </div>
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <button onClick={() => onSave(local)}>Save Settings</button>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [tab, setTab] = useState('dashboard');
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [saveError, setSaveError] = useState(null);
+  const [config, setConfig] = useState(DEFAULT_CONFIG);
+  const [customFoods, setCustomFoods] = useState([]);
+  const [log, setLog] = useState([]);
+  const [, forceTick] = useState(0);
+  const saveTimer = useRef(null);
+
+  // Initial load from the hosted backend (GET /api/data).
+  useEffect(() => {
+    fetchData()
+      .then(data => {
+        setConfig({ ...DEFAULT_CONFIG, ...(data.config || {}) });
+        setCustomFoods(data.customFoods || []);
+        setLog(data.log || []);
+        setLoaded(true);
+      })
+      .catch(err => setLoadError(String(err)));
+  }, []);
+
+  // Persist to the hosted backend (debounced POST /api/data) whenever
+  // config/customFoods/log change, once the initial load has completed.
+  useEffect(() => {
+    if (!loaded) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      saveData({ config, customFoods, log })
+        .then(() => setSaveError(null))
+        .catch(err => setSaveError(String(err)));
+    }, 400);
+    return () => clearTimeout(saveTimer.current);
+  }, [config, customFoods, log, loaded]);
+
+  // Re-render periodically so decay bars visibly drift even with no new actions.
+  useEffect(() => {
+    const id = setInterval(() => forceTick(t => t + 1), 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  const allFoods = useMemo(() => [...SEED_FOODS, ...customFoods], [customFoods]);
+  const targets = useMemo(() => computeTargets(config), [config]);
+  const levels = useMemo(() => computeAllLevels(log, Date.now()), [log]);
+
+  const handleLogFood = (food, grams) => {
+    const entry = {
+      id: 'e' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+      foodId: food.id,
+      foodName: food.name,
+      grams,
+      timestamp: Date.now(),
+      per100g: food.nutrients,
+      nutrients: scaleNutrients(food.nutrients, grams),
+    };
+    setLog(prev => [...prev, entry]);
+  };
+
+  const handleDeleteEntry = (id) => setLog(prev => prev.filter(e => e.id !== id));
+
+  const handleEditGrams = (id, grams) => {
+    setLog(prev => prev.map(e => {
+      if (e.id !== id) return e;
+      const g = Math.max(0, grams || 0);
+      return { ...e, grams: g, nutrients: scaleNutrients(e.per100g, g) };
+    }));
+  };
+
+  const handleAddFood = (name, vals) => {
+    const nutrients = {};
+    NUTRIENT_KEYS.forEach(k => { nutrients[k] = (vals[k] === undefined ? null : vals[k]); });
+    const newFood = { id: 'c' + Date.now(), name, source: 'custom', nutrients };
+    setCustomFoods(prev => [...prev, newFood]);
+  };
+
+  if (loadError) {
+    return (
+      <div className="error-state">
+        <strong>Couldn't load your data.</strong>
+        <div style={{ marginTop: 6 }}>{loadError}</div>
+        <div style={{ marginTop: 6 }}>
+          Try reloading the page. If this keeps happening, the server may be down —
+          check its status or try again shortly.
+        </div>
+      </div>
+    );
+  }
+  if (!loaded) {
+    return <div className="empty-state">Loading your data…</div>;
+  }
+
+  return (
+    <div>
+      <h1>NutriTool</h1>
+      <div className="subtitle">
+        Hosted nutrient intake tracker — the always-reachable companion to nutritool-local, so you can log
+        food from your phone or any device. Requires internet and your shared password each session.
+        {' '}<a href="/logout">Log out</a>
+      </div>
+      {saveError && (
+        <div className="callout">
+          Last save to the server failed: {saveError} — your latest change may not be persisted yet.
+        </div>
+      )}
+      <div className="tabs">
+        <button className={"tab" + (tab === 'dashboard' ? ' active' : '')} onClick={() => setTab('dashboard')}>Dashboard</button>
+        <button className={"tab" + (tab === 'log' ? ' active' : '')} onClick={() => setTab('log')}>Log Food</button>
+        <button className={"tab" + (tab === 'history' ? ' active' : '')} onClick={() => setTab('history')}>History</button>
+        <button className={"tab" + (tab === 'addfood' ? ' active' : '')} onClick={() => setTab('addfood')}>Add Food</button>
+        <button className={"tab" + (tab === 'settings' ? ' active' : '')} onClick={() => setTab('settings')}>Settings</button>
+      </div>
+
+      {tab === 'dashboard' && (
+        <React.Fragment>
+          <Dashboard levels={levels} targets={targets} />
+          <details>
+            <summary>About the decay / lookback model</summary>
+            <div className="callout" style={{ marginTop: 6 }}>
+              This tool is not clinically authoritative. Daily-reset nutrients (macros, sodium, potassium,
+              vitamin C, B-vitamins) compare today's intake to today's target only. Lookback-window nutrients
+              (other minerals, fat-soluble vitamins) compare a rolling, exponentially-decaying sum of recent
+              intake to RDA x window-days — decay uses a half-life that defaults to window/2, except choline
+              which uses an explicit 7-day half-life regardless of its 30-day window. The "sourced" vs
+              "estimate" badges next to each lookback nutrient indicate whether its window/half-life comes
+              from cited pharmacokinetic data or is an unsourced placeholder — see README for the full table
+              and citations. Calcium is tracked against its daily RDA only, with no decay model, because
+              short-term calcium status isn't a meaningful "depleting level" the way it is for iron or
+              vitamin D (see the info icon on Calcium).
+            </div>
+          </details>
+        </React.Fragment>
+      )}
+      {tab === 'log' && <LogEntryPanel foods={allFoods} onLog={handleLogFood} />}
+      {tab === 'history' && <LogHistory entries={log} onDelete={handleDeleteEntry} onEditGrams={handleEditGrams} />}
+      {tab === 'addfood' && <AddFoodForm onAdd={handleAddFood} />}
+      {tab === 'settings' && <SettingsPanel config={config} onSave={setConfig} />}
+
+      <div className="footer-note">
+        Seed food data (~100 foods) is styled after USDA FoodData Central per-100g values, entered from
+        general nutrition knowledge rather than fetched live. RDA/AI targets are sourced from NIH Office
+        of Dietary Supplements fact sheets summarizing the National Academies' Dietary Reference Intakes.
+        Treat all numbers here as personal-tracking estimates, not medical advice. This is the hosted
+        companion to nutritool-local — see README.md for why it exists, the decay/lookback table, and the
+        password-gate and deployment setup.
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

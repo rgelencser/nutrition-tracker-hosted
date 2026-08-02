@@ -1,0 +1,8 @@
+desktop.ini
+.env
+.deploy_state.json
+nutritool.db
+__pycache__/
+*.pyc
+.venv/
+venv/
