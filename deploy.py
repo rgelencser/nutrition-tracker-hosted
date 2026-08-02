@@ -28,6 +28,7 @@ Required environment variables (set in your shell, or in a gitignored
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -100,6 +101,13 @@ def require_config():
         )
 
 
+def is_ok(status):
+    # PythonAnywhere's API isn't consistent about which 2xx it returns for
+    # which endpoint (e.g. console creation is 201, not 200) -- accept the
+    # whole success range rather than hardcoding one status per call.
+    return status is not None and 200 <= status < 300
+
+
 def api_request(method, path, body=None):
     url = f"{API_BASE}/user/{USERNAME}{path}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -148,13 +156,13 @@ def step_get_console():
 
     if console_id is not None:
         status, _ = api_request("GET", f"/consoles/{console_id}/")
-        if status == 200:
+        if is_ok(status):
             print(f"      Reusing existing console #{console_id}.")
             return console_id
         # Stale/closed -- fall through and create a new one.
 
     status, body = api_request("POST", "/consoles/", {"executable": "bash", "arguments": ""})
-    if status != 200:
+    if not is_ok(status):
         fail("OPEN CONSOLE", f"Could not create a console (HTTP {status}).", body)
     try:
         console_id = json.loads(body)["id"]
@@ -168,31 +176,59 @@ def step_get_console():
 
 def step_git_pull(console_id):
     print("[3/5] Sending `git pull origin main` to the console...")
+
+    # Capture a baseline first: this console may be reused across deploys,
+    # and its scrollback can still contain a DEPLOY_MARKER_N line from a
+    # previous run. Only the output appended *after* this point is ours.
+    status, body = api_request("GET", f"/consoles/{console_id}/get_latest_output/")
+    baseline_output = ""
+    if is_ok(status):
+        try:
+            baseline_output = json.loads(body).get("output", "")
+        except json.JSONDecodeError:
+            baseline_output = body
+
     command = f"cd {REPO_PATH} && git pull origin main; echo {MARKER}$?\n"
     status, body = api_request("POST", f"/consoles/{console_id}/send_input/", {"input": command})
-    if status != 200:
+    if status == 412:
+        console_url = f"https://www.pythonanywhere.com/user/{USERNAME}/consoles/{console_id}/"
+        fail(
+            "GIT PULL",
+            "This console has never been opened in a real browser, so PythonAnywhere hasn't "
+            "actually started its process yet -- this is a platform limitation (their own staff "
+            "confirm there's no API-only way around it), not a bug in this script. Fix: open "
+            f"{console_url} in your browser once, wait for the prompt to appear, then rerun "
+            "deploy.py. Once a console has been opened this way, it stays usable via the API for "
+            "roughly a day or two before it needs to be woken up again the same way.",
+            body,
+        )
+    if not is_ok(status):
         fail("GIT PULL", f"Could not send input to the console (HTTP {status}).", body)
 
     deadline = time.time() + CONSOLE_POLL_TIMEOUT_SEC
-    last_output = ""
+    last_output = baseline_output
     while time.time() < deadline:
         time.sleep(CONSOLE_POLL_INTERVAL_SEC)
         status, body = api_request("GET", f"/consoles/{console_id}/get_latest_output/")
-        if status != 200:
+        if not is_ok(status):
             fail("GIT PULL", f"Could not read console output (HTTP {status}).", body)
         try:
             last_output = json.loads(body).get("output", "")
         except json.JSONDecodeError:
             last_output = body
 
-        if MARKER in last_output:
-            exit_code_str = last_output.split(MARKER, 1)[1].strip().split()[0]
-            try:
-                exit_code = int(exit_code_str)
-            except ValueError:
-                fail("GIT PULL", "Couldn't parse the git pull exit code from console output.", last_output)
+        new_output = last_output[len(baseline_output):] if last_output.startswith(baseline_output) else last_output
+
+        # Match digits immediately after the marker only -- the terminal
+        # first echoes the *typed* command (literal, unexpanded "...$?"),
+        # then later prints the real result once $? has actually expanded,
+        # possibly followed directly by ANSI escape codes with no
+        # whitespace in between. Take the last match in case of retries.
+        matches = re.findall(re.escape(MARKER) + r"(\d+)", new_output)
+        if matches:
+            exit_code = int(matches[-1])
             if exit_code != 0:
-                fail("GIT PULL", f"`git pull origin main` exited {exit_code} on PythonAnywhere.", last_output)
+                fail("GIT PULL", f"`git pull origin main` exited {exit_code} on PythonAnywhere.", new_output)
             print("      Pulled successfully.")
             return
 
@@ -202,7 +238,7 @@ def step_git_pull(console_id):
 def step_reload():
     print("[4/5] Reloading the web app...")
     status, body = api_request("POST", f"/webapps/{DOMAIN}/reload/")
-    if status != 200:
+    if not is_ok(status):
         fail("RELOAD", f"Reload request failed (HTTP {status}).", body)
     print("      Reload requested.")
 

@@ -59,19 +59,37 @@ committed:
 | `NUTRITOOL_PASSWORD` | the one shared password the login page checks against |
 | `SECRET_KEY` | signs the session cookie; without it, a random one is generated at every process start, which logs everyone out on every reload |
 
-**On PythonAnywhere**: set both in the **Web** tab's *Environment variables*
-section (Account → Web → your app → Environment variables), then Reload.
+**On PythonAnywhere**: the free tier's Web tab has no *Environment
+variables* section (that appears to be a paid-plan feature, or at least
+wasn't present when this was written) — use the `.env` fallback instead,
+from a **Bash console**:
 
-**Locally**: export them in your shell, or create a `.env` file next to
-`app.py` (gitignored, never committed):
-
-```
+```bash
+cd ~/nutrition-tracker-hosted
+cat > .env << 'EOF'
 NUTRITOOL_PASSWORD=choose-something-only-you-know
 SECRET_KEY=some-long-random-string
+EOF
 ```
+
+`app.py` loads this automatically at startup (see `load_dotenv_if_present()`)
+and it's already covered by `.gitignore`, so this satisfies the same "env
+var or gitignored config, never hardcoded" requirement either way. Reload
+the web app afterwards for it to take effect.
+
+**Locally** (for testing before you deploy): export them in your shell, or
+create the same kind of `.env` file next to `app.py` on your own machine.
 
 If `NUTRITOOL_PASSWORD` isn't set, the login page will refuse every
 password — it fails closed, never open.
+
+**Don't also turn on PythonAnywhere's own "Password protection"** (Web tab
+→ Security section) — that's their platform-level HTTP Basic Auth for the
+whole site, separate from this app's login page, and stacking it on top
+just adds a second, redundant password prompt. Their **"Force HTTPS"**
+toggle is worth enabling, though — it's a nice-to-have complement to the
+automatic HTTPS described above, refusing plain-HTTP requests outright
+rather than just redirecting them.
 
 ## Deploying to PythonAnywhere
 
@@ -148,6 +166,27 @@ break without notice. If `deploy.py` starts failing for reasons that look
 like the API itself changed (not a real deploy problem), check
 https://www.pythonanywhere.com/api/v0/ against what this script sends, or
 just use the manual fallback below while you fix it.
+
+**Two real platform quirks you'll likely hit, both confirmed against a live
+account while building this:**
+
+- **"Console limit reached"**: the free tier caps you at 2 consoles total,
+  counting any you have open in the dashboard yourself. `deploy.py` reuses
+  one console across deploys specifically to avoid burning through that
+  limit, but if you hit it anyway, go to your
+  [Consoles page](https://www.pythonanywhere.com/consoles/) and kill
+  whichever ones you don't need — the script's error message on this
+  (`OPEN CONSOLE FAILED`) will show PythonAnywhere's own page telling you
+  exactly this.
+- **"Console not yet started. Please load it (or its iframe) in a browser
+  first"** (HTTP 412): a freshly-created console isn't actually running
+  until something loads its page in a real browser — there is no
+  documented API-only way around this (PythonAnywhere staff themselves
+  point to Selenium as the only fully-automated workaround). In practice:
+  the first time `deploy.py` creates a console, open the URL it prints in
+  the error message, wait for the terminal prompt to appear, then rerun
+  `deploy.py`. Once "woken" this way, that console stays usable via the
+  API alone for roughly a day or two before it needs waking again.
 
 ### Path 2 — manual fallback (always works, not just a last resort)
 
