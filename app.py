@@ -107,7 +107,10 @@ def init_db():
             CREATE TABLE IF NOT EXISTS custom_foods (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
-                nutrients TEXT NOT NULL
+                nutrients TEXT NOT NULL,
+                ingredients TEXT,
+                finished_weight REAL,
+                type TEXT DEFAULT 'custom'
             );
             CREATE TABLE IF NOT EXISTS log_entries (
                 id TEXT PRIMARY KEY,
@@ -121,6 +124,26 @@ def init_db():
             """
         )
         conn.commit()
+        migrate_db(conn)
+
+
+def migrate_db(conn):
+    """Add the columns 'cooked food' / recipe support needs to an existing
+    custom_foods table, without dropping data. The CREATE TABLE above
+    already includes these columns for brand-new databases -- this only
+    matters for a database that predates the recipe feature (e.g. the live
+    one already deployed on PythonAnywhere when this was added). No-op if a
+    column is already present, so it's always safe to call on startup."""
+    existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(custom_foods)").fetchall()}
+    migrations = [
+        ("ingredients", "ALTER TABLE custom_foods ADD COLUMN ingredients TEXT"),
+        ("finished_weight", "ALTER TABLE custom_foods ADD COLUMN finished_weight REAL"),
+        ("type", "ALTER TABLE custom_foods ADD COLUMN type TEXT DEFAULT 'custom'"),
+    ]
+    for col_name, ddl in migrations:
+        if col_name not in existing_cols:
+            conn.execute(ddl)
+    conn.commit()
 
 
 def read_dataset():
@@ -128,10 +151,16 @@ def read_dataset():
         config_row = conn.execute("SELECT data FROM config WHERE id = 1").fetchone()
         config = json.loads(config_row["data"]) if config_row else {}
 
-        custom_foods = [
-            {"id": r["id"], "name": r["name"], "source": "custom", "nutrients": json.loads(r["nutrients"])}
-            for r in conn.execute("SELECT id, name, nutrients FROM custom_foods").fetchall()
-        ]
+        custom_foods = []
+        for r in conn.execute(
+            "SELECT id, name, nutrients, ingredients, finished_weight, type FROM custom_foods"
+        ).fetchall():
+            source = r["type"] or "custom"
+            food = {"id": r["id"], "name": r["name"], "source": source, "nutrients": json.loads(r["nutrients"])}
+            if source == "recipe":
+                food["ingredients"] = json.loads(r["ingredients"]) if r["ingredients"] else []
+                food["finishedWeight"] = r["finished_weight"]
+            custom_foods.append(food)
 
         log = [
             {
@@ -161,11 +190,25 @@ def write_config(config):
 def write_custom_foods(custom_foods):
     # Whole-collection replace, same "small data, whole-file-ish write is
     # fine" simplicity as nutritool-local -- no per-item add/remove endpoints.
+    # Covers both plain custom foods (source: 'custom', no ingredients) and
+    # cooked-food recipes (source: 'recipe', ingredients + finishedWeight);
+    # the latter two columns are simply NULL for non-recipe rows.
     with closing(get_db()) as conn:
         conn.execute("DELETE FROM custom_foods")
         conn.executemany(
-            "INSERT INTO custom_foods (id, name, nutrients) VALUES (?, ?, ?)",
-            [(f["id"], f["name"], json.dumps(f.get("nutrients", {}))) for f in custom_foods],
+            "INSERT INTO custom_foods (id, name, nutrients, ingredients, finished_weight, type) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    f["id"],
+                    f["name"],
+                    json.dumps(f.get("nutrients", {})),
+                    json.dumps(f["ingredients"]) if f.get("source") == "recipe" else None,
+                    f.get("finishedWeight") if f.get("source") == "recipe" else None,
+                    f.get("source", "custom"),
+                )
+                for f in custom_foods
+            ],
         )
         conn.commit()
 

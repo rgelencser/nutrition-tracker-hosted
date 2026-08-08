@@ -211,6 +211,17 @@ const CALCIUM_NOTE =
   "intake-tracking convenience, flagged below 70% like the daily-reset nutrients, but this " +
   "does NOT reflect your actual body calcium status.";
 
+const FINISHED_WEIGHT_NOTE =
+  "\"Per 100g\" is a concentration, not just a sum of what went in — it depends on how much the " +
+  "finished dish actually weighs. Leaving finished weight blank falls back to the raw sum of " +
+  "ingredient grams, which is a real approximation: cooking changes total weight in both directions " +
+  "(evaporation shrinks it, e.g. reducing a sauce or roasting meat; water absorption grows it, e.g. " +
+  "rice, pasta, dried beans). Using the wrong denominator skews EVERY nutrient's per-100g value by " +
+  "the same ratio, not just water-related ones — so weighing the finished dish, even roughly, " +
+  "meaningfully improves accuracy. NOT modeled here: nutrient loss/leaching from heat or drain-off " +
+  "(that would need USDA retention-factor tables per cooking method) — this only corrects for " +
+  "mass/dilution, a separate concern from nutrient degradation.";
+
 /* ============================================================================
  * DECAY / LOOKBACK-WINDOW TABLE (class 3 nutrients)
  * ----------------------------------------------------------------------------
@@ -579,6 +590,45 @@ function fmtNum(v, unit) {
 }
 
 /* ============================================================================
+ * RECIPE / COOKED-FOOD COMPOSITE CALCULATION
+ * ----------------------------------------------------------------------------
+ * A "cooked food" (source: 'recipe') is a food built from other foods:
+ *   { id, name, source: 'recipe', ingredients: [{ foodId, grams }, ...],
+ *     finishedWeight: number | null, nutrients: <computed per-100g composite> }
+ *
+ * weightBasis = finishedWeight (if > 0), else the sum of ingredient grams.
+ * Missing ingredient nutrient values are treated as 0 in this sum — the
+ * null-means-unknown convention lives at the ingredient level, not the
+ * composite, so a recipe is never partially null just because one
+ * ingredient has a gap. Recomputed on every save (initial or edit), so an
+ * edited recipe's nutrients never go stale relative to its current
+ * ingredients/finishedWeight.
+ *
+ * NOT modeled: nutrient degradation/leaching from heat or drain-off (would
+ * need USDA retention-factor tables per cooking method) — this only
+ * corrects for mass/dilution (how much the dish weighs), a separate
+ * concern from nutrient loss during cooking.
+ * ========================================================================= */
+function computeRecipeNutrients(ingredients, finishedWeight, allFoods) {
+  const foodById = Object.fromEntries(allFoods.map(f => [f.id, f]));
+  const ingredientWeightSum = ingredients.reduce((sum, ing) => sum + (Number(ing.grams) || 0), 0);
+  const weightBasis = (Number(finishedWeight) > 0) ? Number(finishedWeight) : ingredientWeightSum;
+
+  const composite = {};
+  NUTRIENT_KEYS.forEach(key => {
+    let sum = 0;
+    ingredients.forEach(ing => {
+      const food = foodById[ing.foodId];
+      if (!food) return;
+      const v = food.nutrients[key];
+      sum += (v == null ? 0 : v) * (Number(ing.grams) || 0) / 100;
+    });
+    composite[key] = weightBasis > 0 ? (sum / weightBasis) * 100 : 0;
+  });
+  return composite;
+}
+
+/* ============================================================================
  * UI COMPONENTS
  * ========================================================================= */
 function Tooltip({ text }) {
@@ -675,7 +725,7 @@ function FoodPicker({ foods, selectedId, onSelect }) {
             onClick={() => onSelect(f.id)}
           >
             <span>{f.name}</span>
-            <span className="src">{f.source === 'custom' ? 'custom' : 'seed'}</span>
+            <span className="src">{f.source === 'recipe' ? 'recipe' : f.source === 'custom' ? 'custom' : 'seed'}</span>
           </div>
         ))}
       </div>
@@ -795,6 +845,166 @@ function AddFoodForm({ onAdd }) {
       <div style={{ marginTop: 12 }}>
         <button onClick={handleSubmit}>Add Food</button>
       </div>
+    </div>
+  );
+}
+
+function CookedFoodForm({ allFoods, recipes, onSave }) {
+  const [editingId, setEditingId] = useState(null);
+  const [name, setName] = useState('');
+  const [ingredients, setIngredients] = useState([]); // [{ foodId, grams }]
+  const [finishedWeight, setFinishedWeight] = useState('');
+
+  const addIngredient = (foodId) => setIngredients(prev => [...prev, { foodId, grams: 100 }]);
+  const removeIngredient = (idx) => setIngredients(prev => prev.filter((_, i) => i !== idx));
+  const setIngredientGrams = (idx, grams) =>
+    setIngredients(prev => prev.map((ing, i) => (i === idx ? { ...ing, grams } : ing)));
+
+  const ingredientWeightSum = ingredients.reduce((sum, ing) => sum + (Number(ing.grams) || 0), 0);
+  const weightBasis = (Number(finishedWeight) > 0) ? Number(finishedWeight) : ingredientWeightSum;
+  const preview = useMemo(
+    () => computeRecipeNutrients(ingredients, finishedWeight, allFoods),
+    [ingredients, finishedWeight, allFoods]
+  );
+
+  const loadRecipe = (recipe) => {
+    setEditingId(recipe.id);
+    setName(recipe.name);
+    setIngredients(recipe.ingredients.map(i => ({ ...i })));
+    setFinishedWeight(recipe.finishedWeight != null ? String(recipe.finishedWeight) : '');
+  };
+
+  const resetForm = () => {
+    setEditingId(null);
+    setName('');
+    setIngredients([]);
+    setFinishedWeight('');
+  };
+
+  const handleSave = () => {
+    if (!name.trim() || ingredients.length === 0) return;
+    const cleanIngredients = ingredients.map(ing => ({ foodId: ing.foodId, grams: Number(ing.grams) || 0 }));
+    const fw = Number(finishedWeight) > 0 ? Number(finishedWeight) : null;
+    onSave({
+      id: editingId || ('r' + Date.now()),
+      name: name.trim(),
+      source: 'recipe',
+      ingredients: cleanIngredients,
+      finishedWeight: fw,
+      nutrients: computeRecipeNutrients(cleanIngredients, fw, allFoods),
+    });
+    resetForm();
+  };
+
+  return (
+    <div className="panel">
+      <h2>{editingId ? 'Edit Cooked Food' : 'Add Cooked Food'}</h2>
+      <div className="muted" style={{ marginBottom: 8 }}>
+        Build a food from other foods (a recipe/dish). Pick ingredients below, enter grams used of each,
+        name the result, and save — it then shows up in the food list like any other food.
+      </div>
+      <label>Name</label>
+      <input type="text" value={name} onChange={e => setName(e.target.value)} style={{ width: '100%' }} />
+
+      <div style={{ marginTop: 10 }}>
+        <FoodPicker foods={allFoods} selectedId={null} onSelect={addIngredient} />
+      </div>
+
+      {ingredients.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <label>Ingredients ({ingredientWeightSum}g total)</label>
+          {ingredients.map((ing, idx) => {
+            const food = allFoods.find(f => f.id === ing.foodId);
+            return (
+              <div className="log-row" key={idx} style={{ gridTemplateColumns: '1fr 90px 70px' }}>
+                <div>{food ? food.name : '(unknown food)'}</div>
+                <div>
+                  <input
+                    type="number"
+                    min="0"
+                    value={ing.grams}
+                    onChange={e => setIngredientGrams(idx, Number(e.target.value))}
+                    style={{ width: 70 }}
+                  />
+                </div>
+                <div><button className="danger" onClick={() => removeIngredient(idx)}>Remove</button></div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        Finished weight (g) — optional <Tooltip text={FINISHED_WEIGHT_NOTE} />
+      </label>
+      <input
+        type="number"
+        min="0"
+        value={finishedWeight}
+        onChange={e => setFinishedWeight(e.target.value)}
+        style={{ width: 120 }}
+      />
+      <div className="muted" style={{ marginTop: 4 }}>
+        {Number(finishedWeight) > 0
+          ? `Using finished weight: ${finishedWeight}g as the per-100g basis.`
+          : `No finished weight entered — falling back to the ${ingredientWeightSum}g ingredient sum as the basis (an approximation; see the info icon above).`}
+      </div>
+
+      {ingredients.length > 0 && (
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+          <div className="muted" style={{ marginBottom: 6 }}>
+            Live preview — per 100g of finished dish (basis: {weightBasis.toFixed(0)}g)
+          </div>
+          {GROUP_ORDER.map(group => (
+            <div key={group}>
+              <div className="group-title">{GROUP_LABELS[group]}</div>
+              {NUTRIENTS.filter(n => n.group === group).map(n => (
+                <div key={n.key} className="nutrient-row" style={{ gridTemplateColumns: '150px 1fr' }}>
+                  <div className="nutrient-name">{n.label}</div>
+                  <div className="nutrient-values">{fmtNum(preview[n.key], n.unit)} {n.unit}</div>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+        <button onClick={handleSave} disabled={!name.trim() || ingredients.length === 0}>
+          {editingId ? 'Save changes' : 'Save cooked food'}
+        </button>
+        {editingId && <button className="secondary" onClick={resetForm}>Cancel edit / start new</button>}
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <h2>Saved Cooked Foods</h2>
+        {recipes.length === 0 && <div className="empty-state">No cooked foods saved yet.</div>}
+        {recipes.length > 0 && (
+          <div className="food-list">
+            {recipes.map(r => (
+              <div key={r.id} className="food-item" onClick={() => loadRecipe(r)}>
+                <span>{r.name}</span>
+                <span className="src">recipe</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AddFoodTabs({ allFoods, recipes, onAddSimple, onSaveRecipe }) {
+  const [mode, setMode] = useState('simple');
+  return (
+    <div>
+      <div className="tabs">
+        <button className={"tab" + (mode === 'simple' ? ' active' : '')} onClick={() => setMode('simple')}>Simple food</button>
+        <button className={"tab" + (mode === 'cooked' ? ' active' : '')} onClick={() => setMode('cooked')}>Cooked food</button>
+      </div>
+      {mode === 'simple'
+        ? <AddFoodForm onAdd={onAddSimple} />
+        : <CookedFoodForm allFoods={allFoods} recipes={recipes} onSave={onSaveRecipe} />}
     </div>
   );
 }
@@ -925,6 +1135,16 @@ function App() {
     setCustomFoods(prev => [...prev, newFood]);
   };
 
+  const handleSaveRecipe = (recipe) => {
+    setCustomFoods(prev => {
+      const idx = prev.findIndex(f => f.id === recipe.id);
+      if (idx === -1) return [...prev, recipe];
+      const next = [...prev];
+      next[idx] = recipe;
+      return next;
+    });
+  };
+
   if (loadError) {
     return (
       <div className="error-state">
@@ -984,7 +1204,14 @@ function App() {
       )}
       {tab === 'log' && <LogEntryPanel foods={allFoods} onLog={handleLogFood} />}
       {tab === 'history' && <LogHistory entries={log} onDelete={handleDeleteEntry} onEditGrams={handleEditGrams} />}
-      {tab === 'addfood' && <AddFoodForm onAdd={handleAddFood} />}
+      {tab === 'addfood' && (
+        <AddFoodTabs
+          allFoods={allFoods}
+          recipes={customFoods.filter(f => f.source === 'recipe')}
+          onAddSimple={handleAddFood}
+          onSaveRecipe={handleSaveRecipe}
+        />
+      )}
       {tab === 'settings' && <SettingsPanel config={config} onSave={setConfig} />}
 
       <div className="footer-note">
