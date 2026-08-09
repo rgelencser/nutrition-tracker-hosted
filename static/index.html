@@ -690,6 +690,300 @@ function wouldCreateCycle(startIngredients, targetId, allFoods) {
 }
 
 /* ============================================================================
+ * CSV EXPORT / IMPORT
+ * ----------------------------------------------------------------------------
+ * Two files, joined by food name (case-insensitive) rather than id -- ids
+ * are never exposed in either CSV:
+ *   nutritool_foods.csv:               name, source, finishedWeight, <29 nutrient columns>
+ *   nutritool_recipe_ingredients.csv:  recipe_name, ingredient_name, grams
+ *
+ * Nutrient column headers and the header->key lookup are both derived from
+ * NUTRIENTS directly, so this stays correct if that array ever changes
+ * rather than drifting out of sync with a separately maintained list.
+ *
+ * Hand-rolled CSV read/write (no new dependency) with standard RFC4180-ish
+ * quoting: any field containing a comma, quote, or newline is wrapped in
+ * quotes with internal quotes doubled.
+ * ========================================================================= */
+const NUTRIENT_HEADERS = NUTRIENTS.map(n => `${n.label} (${n.unit})`);
+const NUTRIENT_HEADER_TO_KEY = Object.fromEntries(NUTRIENTS.map(n => [`${n.label} (${n.unit})`, n.key]));
+const FOODS_CSV_HEADER = ['name', 'source', 'finishedWeight', ...NUTRIENT_HEADERS];
+
+function csvEscape(field) {
+  const s = field == null ? '' : String(field);
+  if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+function csvRow(fields) {
+  return fields.map(csvEscape).join(',') + '\r\n';
+}
+
+// Hand-rolled RFC4180-ish parser: quoted fields may contain commas,
+// newlines, and escaped ("") quotes; only unquoted newlines end a row.
+// Handles \r\n, \n, and lone \r line endings, and strips a leading BOM
+// (present on our own exports, and common in Excel-saved CSVs).
+function parseCsv(text) {
+  if (!text) return [];
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+  let i = 0;
+  const len = text.length;
+  while (i < len) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+        inQuotes = false; i++; continue;
+      }
+      field += c; i++; continue;
+    }
+    if (c === '"') { inQuotes = true; i++; continue; }
+    if (c === ',') { row.push(field); field = ''; i++; continue; }
+    if (c === '\r' || c === '\n') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field);
+      field = '';
+      rows.push(row);
+      row = [];
+      i++;
+      continue;
+    }
+    field += c; i++;
+  }
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  return rows.filter(r => !(r.length === 1 && r[0] === ''));
+}
+
+function downloadTextFile(filename, content) {
+  const blob = new Blob(['﻿' + content], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function buildFoodsCsv(customFoods) {
+  const rows = [FOODS_CSV_HEADER];
+  customFoods.forEach(f => {
+    if (f.source !== 'custom' && f.source !== 'recipe') return;
+    const fields = [f.name, f.source, f.source === 'recipe' && f.finishedWeight != null ? f.finishedWeight : ''];
+    NUTRIENTS.forEach(n => {
+      const v = f.nutrients ? f.nutrients[n.key] : null;
+      fields.push(v == null ? '' : v);
+    });
+    rows.push(fields);
+  });
+  return rows.map(csvRow).join('');
+}
+
+function buildIngredientsCsv(customFoods, allFoods) {
+  const rows = [['recipe_name', 'ingredient_name', 'grams']];
+  const foodById = Object.fromEntries(allFoods.map(f => [f.id, f]));
+  customFoods.filter(f => f.source === 'recipe').forEach(r => {
+    (r.ingredients || []).forEach(ing => {
+      const ingFood = foodById[ing.foodId];
+      rows.push([r.name, ingFood ? ingFood.name : '(unknown food)', ing.grams]);
+    });
+  });
+  return rows.map(csvRow).join('');
+}
+
+const TEMPLATE_CUSTOM_NAME = 'EXAMPLE - delete this row before importing';
+const TEMPLATE_RECIPE_NAME = 'EXAMPLE RECIPE - delete this row before importing';
+
+function buildTemplateFoodsCsv() {
+  const customVals = { kcal: 150, protein: 5, fat: 3, carbs: 20 };
+  const customFields = [TEMPLATE_CUSTOM_NAME, 'custom', ''];
+  NUTRIENTS.forEach(n => customFields.push(customVals[n.key] != null ? customVals[n.key] : ''));
+  const recipeFields = [TEMPLATE_RECIPE_NAME, 'recipe', 180];
+  NUTRIENTS.forEach(() => recipeFields.push('')); // computed on import; blank here is intentional
+  return [FOODS_CSV_HEADER, customFields, recipeFields].map(csvRow).join('');
+}
+
+function buildTemplateIngredientsCsv() {
+  const rows = [
+    ['recipe_name', 'ingredient_name', 'grams'],
+    [TEMPLATE_RECIPE_NAME, TEMPLATE_CUSTOM_NAME, 100],
+    [TEMPLATE_RECIPE_NAME, 'Banana, raw', 80],
+  ];
+  return rows.map(csvRow).join('');
+}
+
+function parseNutrientCell(raw, foodName, headerLabel, warnings) {
+  if (raw == null) return null;
+  const trimmed = String(raw).trim();
+  if (trimmed === '') return null;
+  const n = Number(trimmed);
+  if (Number.isNaN(n)) {
+    warnings.push(`"${foodName}": "${headerLabel}" value "${trimmed}" isn't a number -- left blank.`);
+    return null;
+  }
+  return n;
+}
+
+// Parses both CSV files and returns the new food records to add, plus
+// human-readable errors (row/recipe skipped) and warnings (a single field
+// dropped but the row still imported). Never touches existing data --
+// import only ever appends.
+function parseImportFoods(foodsCsvText, ingredientsCsvText, allFoods) {
+  const errors = [];
+  const warnings = [];
+
+  const foodRows = parseCsv(foodsCsvText);
+  if (foodRows.length === 0) {
+    return { newFoods: [], errors: ['nutritool_foods.csv is empty.'], warnings, addedCustomCount: 0, addedRecipeCount: 0 };
+  }
+  const header = foodRows[0];
+  const nameIdx = header.indexOf('name');
+  const sourceIdx = header.indexOf('source');
+  const fwIdx = header.indexOf('finishedWeight');
+  const nutrientColIdx = {};
+  header.forEach((h, idx) => {
+    const key = NUTRIENT_HEADER_TO_KEY[h];
+    if (key) nutrientColIdx[key] = idx;
+  });
+
+  const ingredientRows = parseCsv(ingredientsCsvText);
+  const ingHeader = ingredientRows[0] || [];
+  const ingRecipeIdx = ingHeader.indexOf('recipe_name');
+  const ingNameIdx = ingHeader.indexOf('ingredient_name');
+  const ingGramsIdx = ingHeader.indexOf('grams');
+  const ingredientDataRows = ingredientRows.length > 1 ? ingredientRows.slice(1) : [];
+
+  const pendingCustom = [];
+  const pendingRecipe = [];
+
+  for (let i = 1; i < foodRows.length; i++) {
+    const row = foodRows[i];
+    const rowNum = i + 1;
+    const name = (nameIdx == null || nameIdx === -1 ? '' : (row[nameIdx] || '')).trim();
+    if (!name) {
+      errors.push(`Row ${rowNum}: missing name -- skipped.`);
+      continue;
+    }
+    let source = (sourceIdx === -1 ? '' : (row[sourceIdx] || '')).trim().toLowerCase();
+    if (source === '') source = 'custom';
+    if (source !== 'custom' && source !== 'recipe') {
+      errors.push(`Row ${rowNum} ("${name}"): invalid source "${row[sourceIdx]}" -- must be "custom", "recipe", or blank. Skipped.`);
+      continue;
+    }
+    if (source === 'custom') {
+      const nutrients = {};
+      NUTRIENTS.forEach(n => {
+        const idx = nutrientColIdx[n.key];
+        const raw = idx == null ? '' : row[idx];
+        nutrients[n.key] = parseNutrientCell(raw, name, `${n.label} (${n.unit})`, warnings);
+      });
+      pendingCustom.push({ rowIndex: i, name, nutrients });
+    } else {
+      const fwRaw = (fwIdx === -1 ? '' : (row[fwIdx] || '')).trim();
+      let finishedWeight = null;
+      if (fwRaw !== '') {
+        const n = Number(fwRaw);
+        if (Number.isNaN(n)) {
+          warnings.push(`"${name}": finishedWeight value "${fwRaw}" isn't a number -- treated as blank.`);
+        } else {
+          finishedWeight = n;
+        }
+      }
+      pendingRecipe.push({ rowIndex: i, name, finishedWeight });
+    }
+  }
+
+  const importedCustomFoods = pendingCustom.map((row, idx) => ({
+    id: 'c' + Date.now() + '_' + idx,
+    name: row.name,
+    source: 'custom',
+    nutrients: row.nutrients,
+  }));
+
+  // Resolution is tiered, not a flat merged pool: a same-batch match always
+  // wins over an existing-data match (per spec order a/b/c) rather than the
+  // two pools being combined into one ambiguity check.
+  const existingNameIndex = {};
+  allFoods.forEach(f => {
+    const key = f.name.trim().toLowerCase();
+    (existingNameIndex[key] = existingNameIndex[key] || []).push(f);
+  });
+  const batchNameIndex = {};
+  const addToBatch = (food) => {
+    const key = food.name.trim().toLowerCase();
+    (batchNameIndex[key] = batchNameIndex[key] || []).push(food);
+  };
+  importedCustomFoods.forEach(addToBatch);
+
+  const resolveByName = (name) => {
+    const key = name.trim().toLowerCase();
+    const batchMatches = batchNameIndex[key] || [];
+    if (batchMatches.length === 1) return { food: batchMatches[0] };
+    if (batchMatches.length > 1) return { error: 'ambiguous' };
+    const existingMatches = existingNameIndex[key] || [];
+    if (existingMatches.length === 1) return { food: existingMatches[0] };
+    if (existingMatches.length > 1) return { error: 'ambiguous' };
+    return { error: 'notfound' };
+  };
+
+  const importedRecipes = [];
+  pendingRecipe.forEach(row => {
+    const recipeKey = row.name.trim().toLowerCase();
+    const ingRows = ingredientDataRows.filter(r => (r[ingRecipeIdx] || '').trim().toLowerCase() === recipeKey);
+    if (ingRows.length === 0) {
+      errors.push(`Recipe "${row.name}": no ingredient rows found in nutritool_recipe_ingredients.csv -- skipped.`);
+      return;
+    }
+    const resolvedIngredients = [];
+    let failed = false;
+    for (const ingRow of ingRows) {
+      const ingName = (ingNameIdx === -1 ? '' : (ingRow[ingNameIdx] || '')).trim();
+      const gramsRaw = (ingGramsIdx === -1 ? '' : (ingRow[ingGramsIdx] || '')).trim();
+      const resolved = resolveByName(ingName);
+      if (resolved.error === 'notfound') {
+        errors.push(`Recipe "${row.name}": ingredient "${ingName}" not found -- skipped.`);
+        failed = true;
+        break;
+      }
+      if (resolved.error === 'ambiguous') {
+        errors.push(`Recipe "${row.name}": ingredient "${ingName}" matches more than one food (ambiguous) -- skipped.`);
+        failed = true;
+        break;
+      }
+      const grams = Number(gramsRaw);
+      resolvedIngredients.push({ foodId: resolved.food.id, grams: Number.isNaN(grams) ? 0 : grams });
+    }
+    if (failed) return;
+
+    const fullSnapshot = [...allFoods, ...importedCustomFoods, ...importedRecipes];
+    const nutrients = computeRecipeNutrients(resolvedIngredients, row.finishedWeight, fullSnapshot);
+    const newRecipe = {
+      id: 'r' + Date.now() + '_' + row.rowIndex,
+      name: row.name,
+      source: 'recipe',
+      ingredients: resolvedIngredients,
+      finishedWeight: row.finishedWeight,
+      nutrients,
+    };
+    importedRecipes.push(newRecipe);
+    addToBatch(newRecipe); // lets later recipe rows in this batch reference this one too
+  });
+
+  return {
+    newFoods: [...importedCustomFoods, ...importedRecipes],
+    errors,
+    warnings,
+    addedCustomCount: importedCustomFoods.length,
+    addedRecipeCount: importedRecipes.length,
+  };
+}
+
+/* ============================================================================
  * UI COMPONENTS
  * ========================================================================= */
 function Tooltip({ text }) {
@@ -1175,12 +1469,34 @@ function EditCustomFoodForm({ food, onSave, onCancel }) {
   );
 }
 
-function ManageFoodsPanel({ customFoods, onEditCustomFood, onDeleteFood, onRequestEditRecipe }) {
+function ManageFoodsPanel({ customFoods, allFoods, onEditCustomFood, onDeleteFood, onRequestEditRecipe, onImportFoods }) {
   const [expandedId, setExpandedId] = useState(null);
   const [editingCustomId, setEditingCustomId] = useState(null);
   const [blockedMessage, setBlockedMessage] = useState(null);
+  const [foodsFile, setFoodsFile] = useState(null);
+  const [ingredientsFile, setIngredientsFile] = useState(null);
+  const [importResult, setImportResult] = useState(null);
 
   const items = customFoods.filter(f => f.source === 'custom' || f.source === 'recipe');
+
+  const handleExport = () => {
+    downloadTextFile('nutritool_foods.csv', buildFoodsCsv(customFoods));
+    setTimeout(() => downloadTextFile('nutritool_recipe_ingredients.csv', buildIngredientsCsv(customFoods, allFoods)), 150);
+  };
+
+  const handleDownloadTemplate = () => {
+    downloadTextFile('nutritool_foods.csv', buildTemplateFoodsCsv());
+    setTimeout(() => downloadTextFile('nutritool_recipe_ingredients.csv', buildTemplateIngredientsCsv()), 150);
+  };
+
+  const handleImport = async () => {
+    if (!foodsFile) return;
+    const foodsText = await foodsFile.text();
+    const ingredientsText = ingredientsFile ? await ingredientsFile.text() : '';
+    const result = parseImportFoods(foodsText, ingredientsText, allFoods);
+    if (result.newFoods.length > 0) onImportFoods(result.newFoods);
+    setImportResult(result);
+  };
 
   const handleDeleteClick = (food) => {
     const blockers = foodUsedInRecipes(food.id, customFoods);
@@ -1204,6 +1520,10 @@ function ManageFoodsPanel({ customFoods, onEditCustomFood, onDeleteFood, onReque
       <div className="muted" style={{ marginBottom: 8 }}>
         Custom foods and cooked foods/recipes you've added. Seed foods aren't editable here —
         they're built into the app, not stored data.
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <button className="secondary" onClick={handleExport}>Export to CSV</button>
+        <button className="secondary" onClick={handleDownloadTemplate}>Download import template</button>
       </div>
       {blockedMessage && <div className="callout">{blockedMessage}</div>}
       {items.length === 0 && <div className="empty-state">No custom foods or cooked foods yet.</div>}
@@ -1244,6 +1564,36 @@ function ManageFoodsPanel({ customFoods, onEditCustomFood, onDeleteFood, onReque
           )}
         </div>
       ))}
+
+      <div style={{ marginTop: 20, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+        <h2>Import from CSV</h2>
+        <div className="muted" style={{ marginBottom: 8 }}>
+          Import <code>nutritool_foods.csv</code> (required) and <code>nutritool_recipe_ingredients.csv</code>
+          {' '}(only needed if any row has source=recipe). Imported rows are always added as new entries —
+          existing foods are never modified or overwritten. Not sure of the format? Download the template above.
+        </div>
+        <label>nutritool_foods.csv</label>
+        <input type="file" accept=".csv,text/csv" onChange={e => setFoodsFile(e.target.files[0] || null)} />
+        <label>nutritool_recipe_ingredients.csv (optional)</label>
+        <input type="file" accept=".csv,text/csv" onChange={e => setIngredientsFile(e.target.files[0] || null)} />
+        <div style={{ marginTop: 10 }}>
+          <button onClick={handleImport} disabled={!foodsFile}>Import</button>
+        </div>
+        {importResult && (
+          <div className="callout" style={{ marginTop: 10 }}>
+            <div>
+              Added {importResult.addedCustomCount} custom food{importResult.addedCustomCount === 1 ? '' : 's'} and{' '}
+              {importResult.addedRecipeCount} recipe{importResult.addedRecipeCount === 1 ? '' : 's'}.
+            </div>
+            {(importResult.errors.length > 0 || importResult.warnings.length > 0) && (
+              <ul style={{ marginTop: 6, paddingLeft: 18 }}>
+                {importResult.errors.map((e, i) => <li key={'e' + i}>{e}</li>)}
+                {importResult.warnings.map((w, i) => <li key={'w' + i}>{w}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1409,6 +1759,13 @@ function App() {
     setEditRecipeRequest(recipeId);
   };
 
+  const handleImportFoods = (newFoods) => {
+    // Run through the same recompute pass as every other customFoods
+    // mutation, even though brand-new items can't yet be referenced by
+    // anything -- keeps this on the same code path rather than a special case.
+    setCustomFoods(prev => recomputeDependents([...prev, ...newFoods]));
+  };
+
   if (loadError) {
     return (
       <div className="error-state">
@@ -1482,9 +1839,11 @@ function App() {
       {tab === 'managefoods' && (
         <ManageFoodsPanel
           customFoods={customFoods}
+          allFoods={allFoods}
           onEditCustomFood={handleEditCustomFood}
           onDeleteFood={handleDeleteFood}
           onRequestEditRecipe={handleRequestEditRecipe}
+          onImportFoods={handleImportFoods}
         />
       )}
       {tab === 'settings' && <SettingsPanel config={config} onSave={setConfig} />}
