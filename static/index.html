@@ -629,10 +629,93 @@ function computeRecipeNutrients(ingredients, finishedWeight, allFoods) {
 }
 
 /* ============================================================================
+ * RECIPE DEPENDENCY GRAPH HELPERS
+ * ----------------------------------------------------------------------------
+ * Recipes can reference other recipes as ingredients (the ingredient picker
+ * draws from allFoods, which includes recipe entries), so edits/deletes need
+ * to consider that graph, not just the single food being touched.
+ * ========================================================================= */
+
+// Recipes (source: 'recipe') whose ingredients list includes foodId. Used to
+// block deleting a food that's still relied on, and named in the UI message.
+function foodUsedInRecipes(foodId, customFoods) {
+  return customFoods.filter(f =>
+    f.source === 'recipe' &&
+    Array.isArray(f.ingredients) &&
+    f.ingredients.some(ing => ing.foodId === foodId)
+  );
+}
+
+// Re-run computeRecipeNutrients for every recipe in customFoods, rebuilding
+// the allFoods snapshot each pass so a recipe that nests another recipe
+// picks up its dependency's freshly-computed numbers. Repeated a fixed 4x
+// so chains of nested recipes (A contains B contains C...) settle without
+// needing real dependency-order sorting -- cheap and simple for the data
+// sizes this tool deals with.
+function recomputeDependents(customFoods) {
+  let current = customFoods;
+  for (let pass = 0; pass < 4; pass++) {
+    const allFoodsSnapshot = [...SEED_FOODS, ...current];
+    current = current.map(f => {
+      if (f.source !== 'recipe') return f;
+      return { ...f, nutrients: computeRecipeNutrients(f.ingredients, f.finishedWeight, allFoodsSnapshot) };
+    });
+  }
+  return current;
+}
+
+// DFS from each proposed ingredient's foodId, through any nested recipe's
+// own ingredients, checking whether it ever reaches back to targetId (the
+// recipe being saved -- editingId, or null/undefined for a brand-new
+// recipe). Run unconditionally for both create and edit: on create,
+// targetId is null and can never match a real foodId, so this is a cheap
+// no-op rather than a case worth special-casing out.
+function wouldCreateCycle(startIngredients, targetId, allFoods) {
+  if (!targetId) return false;
+  const recipeById = {};
+  allFoods.forEach(f => { if (f.source === 'recipe') recipeById[f.id] = f; });
+  const visited = new Set();
+  const stack = startIngredients.map(ing => ing.foodId);
+  while (stack.length > 0) {
+    const currentId = stack.pop();
+    if (currentId === targetId) return true;
+    if (visited.has(currentId)) continue;
+    visited.add(currentId);
+    const recipe = recipeById[currentId];
+    if (recipe && Array.isArray(recipe.ingredients)) {
+      recipe.ingredients.forEach(ing => stack.push(ing.foodId));
+    }
+  }
+  return false;
+}
+
+/* ============================================================================
  * UI COMPONENTS
  * ========================================================================= */
 function Tooltip({ text }) {
   return <span className="info-icon" title={text}>i</span>;
+}
+
+// Read-only nutrient breakdown for any food-like object ({ nutrients }).
+// Shared by CookedFoodForm's live preview, FoodPicker's per-row expansion,
+// and ManageFoodsPanel's "Details" view -- one place computing/rendering
+// the same grouped list instead of three inline duplicates.
+function FoodComposition({ food }) {
+  return (
+    <div>
+      {GROUP_ORDER.map(group => (
+        <div key={group}>
+          <div className="group-title">{GROUP_LABELS[group]}</div>
+          {NUTRIENTS.filter(n => n.group === group).map(n => (
+            <div key={n.key} className="nutrient-row" style={{ gridTemplateColumns: '150px 1fr' }}>
+              <div className="nutrient-name">{n.label}</div>
+              <div className="nutrient-values">{fmtNum(food.nutrients[n.key], n.unit)} {n.unit}</div>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function NutrientRow({ nutrient, level, target, rda }) {
@@ -700,6 +783,7 @@ function Dashboard({ levels, targets }) {
 
 function FoodPicker({ foods, selectedId, onSelect }) {
   const [query, setQuery] = useState('');
+  const [expandedId, setExpandedId] = useState(null);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return foods;
@@ -719,13 +803,28 @@ function FoodPicker({ foods, selectedId, onSelect }) {
       <div className="food-list">
         {filtered.length === 0 && <div className="empty-state">No foods match "{query}"</div>}
         {filtered.map(f => (
-          <div
-            key={f.id}
-            className={"food-item" + (f.id === selectedId ? ' selected' : '')}
-            onClick={() => onSelect(f.id)}
-          >
-            <span>{f.name}</span>
-            <span className="src">{f.source === 'recipe' ? 'recipe' : f.source === 'custom' ? 'custom' : 'seed'}</span>
+          <div key={f.id}>
+            <div
+              className={"food-item" + (f.id === selectedId ? ' selected' : '')}
+              onClick={() => onSelect(f.id)}
+            >
+              <span>{f.name}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <button
+                  className="secondary"
+                  style={{ padding: '1px 6px', fontSize: 10 }}
+                  onClick={(e) => { e.stopPropagation(); setExpandedId(prev => (prev === f.id ? null : f.id)); }}
+                >
+                  {expandedId === f.id ? 'Hide' : 'Details'}
+                </button>
+                <span className="src">{f.source === 'recipe' ? 'recipe' : f.source === 'custom' ? 'custom' : 'seed'}</span>
+              </span>
+            </div>
+            {expandedId === f.id && (
+              <div style={{ padding: '6px 10px 10px 10px', borderBottom: '1px solid var(--border)', background: '#fafbfc' }}>
+                <FoodComposition food={f} />
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -808,11 +907,35 @@ function LogHistory({ entries, onDelete, onEditGrams }) {
   );
 }
 
+// Shared by AddFoodForm (new custom food) and ManageFoodsPanel's inline edit
+// form -- same 29-field per-100g grid either way. `vals` may use `undefined`
+// (never entered) or `null` (existing food's "no data") for a blank field;
+// both display as empty. onChange(key, value) reports a Number or
+// `undefined` when the field is cleared -- callers decide how to store that.
+function NutrientFieldsGrid({ vals, onChange }) {
+  const setVal = (key, v) => onChange(key, v === '' ? undefined : Number(v));
+  return (
+    <div className="form-grid" style={{ marginTop: 10 }}>
+      {NUTRIENTS.map(n => (
+        <div key={n.key}>
+          <label>{n.label} ({n.unit})</label>
+          <input
+            type="number"
+            value={vals[n.key] == null ? '' : vals[n.key]}
+            onChange={e => setVal(n.key, e.target.value)}
+            style={{ width: '100%' }}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AddFoodForm({ onAdd }) {
   const [name, setName] = useState('');
   const [vals, setVals] = useState({});
 
-  const setVal = (key, v) => setVals(prev => ({ ...prev, [key]: v === '' ? undefined : Number(v) }));
+  const setVal = (key, v) => setVals(prev => ({ ...prev, [key]: v }));
 
   const handleSubmit = () => {
     if (!name.trim()) return;
@@ -829,19 +952,7 @@ function AddFoodForm({ onAdd }) {
       </div>
       <label>Food name</label>
       <input type="text" value={name} onChange={e => setName(e.target.value)} style={{ width: '100%' }} />
-      <div className="form-grid" style={{ marginTop: 10 }}>
-        {NUTRIENTS.map(n => (
-          <div key={n.key}>
-            <label>{n.label} ({n.unit})</label>
-            <input
-              type="number"
-              value={vals[n.key] === undefined ? '' : vals[n.key]}
-              onChange={e => setVal(n.key, e.target.value)}
-              style={{ width: '100%' }}
-            />
-          </div>
-        ))}
-      </div>
+      <NutrientFieldsGrid vals={vals} onChange={setVal} />
       <div style={{ marginTop: 12 }}>
         <button onClick={handleSubmit}>Add Food</button>
       </div>
@@ -849,11 +960,12 @@ function AddFoodForm({ onAdd }) {
   );
 }
 
-function CookedFoodForm({ allFoods, recipes, onSave }) {
+function CookedFoodForm({ allFoods, recipes, onSave, editRecipeRequest, onConsumeEditRecipeRequest }) {
   const [editingId, setEditingId] = useState(null);
   const [name, setName] = useState('');
   const [ingredients, setIngredients] = useState([]); // [{ foodId, grams }]
   const [finishedWeight, setFinishedWeight] = useState('');
+  const [saveError, setSaveError] = useState(null);
 
   const addIngredient = (foodId) => setIngredients(prev => [...prev, { foodId, grams: 100 }]);
   const removeIngredient = (idx) => setIngredients(prev => prev.filter((_, i) => i !== idx));
@@ -872,17 +984,39 @@ function CookedFoodForm({ allFoods, recipes, onSave }) {
     setName(recipe.name);
     setIngredients(recipe.ingredients.map(i => ({ ...i })));
     setFinishedWeight(recipe.finishedWeight != null ? String(recipe.finishedWeight) : '');
+    setSaveError(null);
   };
+
+  // Requested from ManageFoodsPanel's "Edit" button on a recipe row: App
+  // switches the tab and mode, then hands us the recipe id here. Consumed
+  // once so switching away and back (or the parent re-rendering) doesn't
+  // reload the form out from under an in-progress edit.
+  useEffect(() => {
+    if (!editRecipeRequest) return;
+    const recipe = recipes.find(r => r.id === editRecipeRequest);
+    if (recipe) loadRecipe(recipe);
+    if (onConsumeEditRecipeRequest) onConsumeEditRecipeRequest();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editRecipeRequest]);
 
   const resetForm = () => {
     setEditingId(null);
     setName('');
     setIngredients([]);
     setFinishedWeight('');
+    setSaveError(null);
   };
 
   const handleSave = () => {
     if (!name.trim() || ingredients.length === 0) return;
+    if (wouldCreateCycle(ingredients, editingId, allFoods)) {
+      setSaveError(
+        "Can't save: one of these ingredients eventually leads back to this recipe itself " +
+        "(a nested recipe loop). Remove the ingredient that chains back to it."
+      );
+      return;
+    }
+    setSaveError(null);
     const cleanIngredients = ingredients.map(ing => ({ foodId: ing.foodId, grams: Number(ing.grams) || 0 }));
     const fw = Number(finishedWeight) > 0 ? Number(finishedWeight) : null;
     onSave({
@@ -955,19 +1089,11 @@ function CookedFoodForm({ allFoods, recipes, onSave }) {
           <div className="muted" style={{ marginBottom: 6 }}>
             Live preview — per 100g of finished dish (basis: {weightBasis.toFixed(0)}g)
           </div>
-          {GROUP_ORDER.map(group => (
-            <div key={group}>
-              <div className="group-title">{GROUP_LABELS[group]}</div>
-              {NUTRIENTS.filter(n => n.group === group).map(n => (
-                <div key={n.key} className="nutrient-row" style={{ gridTemplateColumns: '150px 1fr' }}>
-                  <div className="nutrient-name">{n.label}</div>
-                  <div className="nutrient-values">{fmtNum(preview[n.key], n.unit)} {n.unit}</div>
-                </div>
-              ))}
-            </div>
-          ))}
+          <FoodComposition food={{ nutrients: preview }} />
         </div>
       )}
+
+      {saveError && <div className="callout" style={{ marginTop: 12 }}>{saveError}</div>}
 
       <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
         <button onClick={handleSave} disabled={!name.trim() || ingredients.length === 0}>
@@ -994,8 +1120,16 @@ function CookedFoodForm({ allFoods, recipes, onSave }) {
   );
 }
 
-function AddFoodTabs({ allFoods, recipes, onAddSimple, onSaveRecipe }) {
+function AddFoodTabs({ allFoods, recipes, onAddSimple, onSaveRecipe, editRecipeRequest, onConsumeEditRecipeRequest }) {
   const [mode, setMode] = useState('simple');
+
+  // My Foods' "Edit" button on a recipe row sets editRecipeRequest and
+  // switches the main tab to Add Food -- also force this sub-tab to Cooked
+  // food so the requested recipe is actually visible once we land here.
+  useEffect(() => {
+    if (editRecipeRequest) setMode('cooked');
+  }, [editRecipeRequest]);
+
   return (
     <div>
       <div className="tabs">
@@ -1004,7 +1138,112 @@ function AddFoodTabs({ allFoods, recipes, onAddSimple, onSaveRecipe }) {
       </div>
       {mode === 'simple'
         ? <AddFoodForm onAdd={onAddSimple} />
-        : <CookedFoodForm allFoods={allFoods} recipes={recipes} onSave={onSaveRecipe} />}
+        : (
+          <CookedFoodForm
+            allFoods={allFoods}
+            recipes={recipes}
+            onSave={onSaveRecipe}
+            editRecipeRequest={editRecipeRequest}
+            onConsumeEditRecipeRequest={onConsumeEditRecipeRequest}
+          />
+        )}
+    </div>
+  );
+}
+
+function EditCustomFoodForm({ food, onSave, onCancel }) {
+  const [name, setName] = useState(food.name);
+  const [vals, setVals] = useState(() => ({ ...food.nutrients }));
+
+  const setVal = (key, v) => setVals(prev => ({ ...prev, [key]: v }));
+
+  const handleSubmit = () => {
+    if (!name.trim()) return;
+    onSave(food.id, name.trim(), vals);
+  };
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+      <label>Food name</label>
+      <input type="text" value={name} onChange={e => setName(e.target.value)} style={{ width: '100%' }} />
+      <NutrientFieldsGrid vals={vals} onChange={setVal} />
+      <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+        <button onClick={handleSubmit}>Save changes</button>
+        <button className="secondary" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function ManageFoodsPanel({ customFoods, onEditCustomFood, onDeleteFood, onRequestEditRecipe }) {
+  const [expandedId, setExpandedId] = useState(null);
+  const [editingCustomId, setEditingCustomId] = useState(null);
+  const [blockedMessage, setBlockedMessage] = useState(null);
+
+  const items = customFoods.filter(f => f.source === 'custom' || f.source === 'recipe');
+
+  const handleDeleteClick = (food) => {
+    const blockers = foodUsedInRecipes(food.id, customFoods);
+    if (blockers.length > 0) {
+      setBlockedMessage(
+        `Can't delete "${food.name}" — it's used as an ingredient in ` +
+        `${blockers.map(b => `"${b.name}"`).join(', ')}. Remove it from ` +
+        `${blockers.length > 1 ? 'those recipes' : 'that recipe'} first.`
+      );
+      return;
+    }
+    setBlockedMessage(null);
+    if (window.confirm(`Delete "${food.name}"? This can't be undone.`)) {
+      onDeleteFood(food.id);
+    }
+  };
+
+  return (
+    <div className="panel">
+      <h2>My Foods</h2>
+      <div className="muted" style={{ marginBottom: 8 }}>
+        Custom foods and cooked foods/recipes you've added. Seed foods aren't editable here —
+        they're built into the app, not stored data.
+      </div>
+      {blockedMessage && <div className="callout">{blockedMessage}</div>}
+      {items.length === 0 && <div className="empty-state">No custom foods or cooked foods yet.</div>}
+      {items.map(food => (
+        <div key={food.id} style={{ borderBottom: '1px solid var(--border)', padding: '8px 0' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <div>
+              <strong>{food.name}</strong>{' '}
+              <span className="src">{food.source === 'recipe' ? 'recipe' : 'custom'}</span>
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              <button
+                className="secondary"
+                onClick={() => setExpandedId(prev => (prev === food.id ? null : food.id))}
+              >
+                {expandedId === food.id ? 'Hide' : 'Details'}
+              </button>
+              {food.source === 'custom' ? (
+                <button
+                  className="secondary"
+                  onClick={() => setEditingCustomId(prev => (prev === food.id ? null : food.id))}
+                >
+                  {editingCustomId === food.id ? 'Cancel' : 'Edit'}
+                </button>
+              ) : (
+                <button className="secondary" onClick={() => onRequestEditRecipe(food.id)}>Edit</button>
+              )}
+              <button className="danger" onClick={() => handleDeleteClick(food)}>Delete</button>
+            </div>
+          </div>
+          {expandedId === food.id && <FoodComposition food={food} />}
+          {editingCustomId === food.id && food.source === 'custom' && (
+            <EditCustomFoodForm
+              food={food}
+              onSave={(id, name, vals) => { onEditCustomFood(id, name, vals); setEditingCustomId(null); }}
+              onCancel={() => setEditingCustomId(null)}
+            />
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -1067,6 +1306,7 @@ function App() {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [customFoods, setCustomFoods] = useState([]);
   const [log, setLog] = useState([]);
+  const [editRecipeRequest, setEditRecipeRequest] = useState(null);
   const [, forceTick] = useState(0);
   const saveTimer = useRef(null);
 
@@ -1138,11 +1378,35 @@ function App() {
   const handleSaveRecipe = (recipe) => {
     setCustomFoods(prev => {
       const idx = prev.findIndex(f => f.id === recipe.id);
-      if (idx === -1) return [...prev, recipe];
-      const next = [...prev];
-      next[idx] = recipe;
-      return next;
+      const next = idx === -1 ? [...prev, recipe] : prev.map((f, i) => (i === idx ? recipe : f));
+      // Editing a recipe's own ingredients can change its nutrients, which
+      // needs to ripple to any OTHER recipe that nests this one.
+      return recomputeDependents(next);
     });
+  };
+
+  const handleEditCustomFood = (id, name, vals) => {
+    const nutrients = {};
+    NUTRIENT_KEYS.forEach(k => { nutrients[k] = (vals[k] === undefined ? null : vals[k]); });
+    setCustomFoods(prev => {
+      const next = prev.map(f => (f.id === id ? { ...f, name, nutrients } : f));
+      return recomputeDependents(next);
+    });
+  };
+
+  const handleDeleteFood = (id) => {
+    setCustomFoods(prev => {
+      // Defense-in-depth: ManageFoodsPanel already blocks this in the UI,
+      // but don't rely solely on that -- refuse here too if anything still
+      // references this food.
+      if (foodUsedInRecipes(id, prev).length > 0) return prev;
+      return prev.filter(f => f.id !== id);
+    });
+  };
+
+  const handleRequestEditRecipe = (recipeId) => {
+    setTab('addfood');
+    setEditRecipeRequest(recipeId);
   };
 
   if (loadError) {
@@ -1179,6 +1443,7 @@ function App() {
         <button className={"tab" + (tab === 'log' ? ' active' : '')} onClick={() => setTab('log')}>Log Food</button>
         <button className={"tab" + (tab === 'history' ? ' active' : '')} onClick={() => setTab('history')}>History</button>
         <button className={"tab" + (tab === 'addfood' ? ' active' : '')} onClick={() => setTab('addfood')}>Add Food</button>
+        <button className={"tab" + (tab === 'managefoods' ? ' active' : '')} onClick={() => setTab('managefoods')}>My Foods</button>
         <button className={"tab" + (tab === 'settings' ? ' active' : '')} onClick={() => setTab('settings')}>Settings</button>
       </div>
 
@@ -1210,6 +1475,16 @@ function App() {
           recipes={customFoods.filter(f => f.source === 'recipe')}
           onAddSimple={handleAddFood}
           onSaveRecipe={handleSaveRecipe}
+          editRecipeRequest={editRecipeRequest}
+          onConsumeEditRecipeRequest={() => setEditRecipeRequest(null)}
+        />
+      )}
+      {tab === 'managefoods' && (
+        <ManageFoodsPanel
+          customFoods={customFoods}
+          onEditCustomFood={handleEditCustomFood}
+          onDeleteFood={handleDeleteFood}
+          onRequestEditRecipe={handleRequestEditRecipe}
         />
       )}
       {tab === 'settings' && <SettingsPanel config={config} onSave={setConfig} />}
