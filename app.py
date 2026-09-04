@@ -14,8 +14,11 @@ Routes:
     GET  /login          -- password form
     POST /login           -- checks the password, starts a session
     GET  /logout          -- clears the session
-    GET  /api/data        -- login-gated: returns {config, customFoods, log}
+    GET  /api/data        -- login-gated: returns {config, customFoods, log, snapshots}
     POST /api/data         -- login-gated: full or partial update to that dataset
+    GET  /api/history     -- login-gated: historical per-day (or, for window=180,
+                             per-rolling-week) %-of-target points built from
+                             "snapshots", for the History tab's chart
 
 Storage: plain sqlite3 (stdlib), not SQLAlchemy -- three small tables
 (config, custom_foods, log_entries) are simple enough that an ORM would
@@ -37,7 +40,7 @@ import os
 import secrets
 import sqlite3
 from contextlib import closing
-from datetime import timedelta
+from datetime import date, timedelta
 from functools import wraps
 from pathlib import Path
 
@@ -83,7 +86,7 @@ app = Flask(__name__, static_folder="static", static_url_path="")
 app.secret_key = SECRET_KEY
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
-EMPTY_DATASET = {"config": {}, "customFoods": [], "log": []}
+EMPTY_DATASET = {"config": {}, "customFoods": [], "log": [], "snapshots": {}}
 
 
 # ============================================================================
@@ -120,6 +123,10 @@ def init_db():
                 timestamp INTEGER NOT NULL,
                 per100g TEXT NOT NULL,
                 nutrients TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS daily_snapshots (
+                date TEXT PRIMARY KEY,
+                data TEXT NOT NULL
             );
             """
         )
@@ -175,7 +182,12 @@ def read_dataset():
             for r in conn.execute("SELECT * FROM log_entries ORDER BY timestamp").fetchall()
         ]
 
-    return {"config": config, "customFoods": custom_foods, "log": log}
+        snapshots = {
+            r["date"]: json.loads(r["data"])
+            for r in conn.execute("SELECT date, data FROM daily_snapshots").fetchall()
+        }
+
+    return {"config": config, "customFoods": custom_foods, "log": log, "snapshots": snapshots}
 
 
 def write_config(config):
@@ -231,6 +243,21 @@ def write_log(log):
                 )
                 for e in log
             ],
+        )
+        conn.commit()
+
+
+def write_snapshots(snapshots):
+    # Whole-collection replace, same pattern as write_log/write_custom_foods.
+    # `snapshots` is {isoDate: {nutrientKey: {pct, raw, target}}} -- the
+    # frontend computes it (that's where the decay/target math lives, see
+    # index.html's catchUpSnapshots) and just sends the whole accumulated
+    # dict on every save, same as it does for customFoods/log.
+    with closing(get_db()) as conn:
+        conn.execute("DELETE FROM daily_snapshots")
+        conn.executemany(
+            "INSERT INTO daily_snapshots (date, data) VALUES (?, ?)",
+            [(k, json.dumps(v)) for k, v in snapshots.items()],
         )
         conn.commit()
 
@@ -348,8 +375,108 @@ def post_data():
         write_custom_foods(payload["customFoods"])
     if "log" in payload:
         write_log(payload["log"])
+    if "snapshots" in payload:
+        write_snapshots(payload["snapshots"])
 
     return jsonify(read_dataset())
+
+
+# ============================================================================
+# HISTORY -- aggregation over the "snapshots" table for the History tab's
+# chart. Logic here is deliberately identical to nutritool-local's app.py
+# (same function bodies) since both repos share the exact same snapshot
+# shape and the exact same aggregation rules -- kept as plain duplicated
+# code rather than a shared module, consistent with these two repos being
+# separate on purpose (see nutritool_context.md's "why it forked" section).
+# ============================================================================
+HISTORY_WINDOWS = (7, 30, 180)
+
+
+def _parse_iso_date(s):
+    try:
+        return date.fromisoformat(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mean(values):
+    values = [v for v in values if v is not None]
+    return sum(values) / len(values) if values else None
+
+
+def _snapshot_keys_in_range(snapshots, earliest, latest):
+    out = []
+    for k in snapshots.keys():
+        d = _parse_iso_date(k)
+        if d is not None and earliest <= d <= latest:
+            out.append(k)
+    return sorted(out)
+
+
+def build_history_response(snapshots, window, today):
+    latest_completed = today - timedelta(days=1)  # today itself is never snapshotted
+    earliest_allowed = today - timedelta(days=window)
+    day_keys = _snapshot_keys_in_range(snapshots, earliest_allowed, latest_completed)
+
+    if window in (7, 30):
+        points = [{"date": k, "nutrients": snapshots[k]} for k in day_keys]
+        return {"window": window, "granularity": "daily", "points": points}
+
+    # window == 180: rolling 7-day buckets counted BACKWARD from
+    # latest_completed (NOT calendar weeks) -- see nutritool-local's app.py
+    # for the full reasoning, unchanged here.
+    buckets = []
+    bucket_end = latest_completed
+    while bucket_end >= earliest_allowed:
+        bucket_start = max(bucket_end - timedelta(days=6), earliest_allowed)
+        buckets.append((bucket_start, bucket_end))
+        bucket_end = bucket_start - timedelta(days=1)
+
+    points = []
+    for bucket_start, bucket_end in reversed(buckets):
+        keys_in_bucket = [k for k in day_keys if bucket_start <= _parse_iso_date(k) <= bucket_end]
+        if not keys_in_bucket:
+            continue
+        nutrient_keys = set()
+        for k in keys_in_bucket:
+            nutrient_keys.update(snapshots[k].keys())
+        nutrients = {}
+        for nk in nutrient_keys:
+            present = [snapshots[k][nk] for k in keys_in_bucket if nk in snapshots[k]]
+            nutrients[nk] = {
+                "pct": _mean([p.get("pct") for p in present]),
+                "raw": _mean([p.get("raw") for p in present]),
+                "target": _mean([p.get("target") for p in present]),
+            }
+        points.append({
+            "date": bucket_start.isoformat(),
+            "weekStart": bucket_start.isoformat(),
+            "weekEnd": bucket_end.isoformat(),
+            "nutrients": nutrients,
+        })
+
+    return {"window": window, "granularity": "weekly", "points": points}
+
+
+@app.route("/api/history", methods=["GET"])
+@login_required
+def get_history():
+    try:
+        window = int(request.args.get("window", 30))
+    except (TypeError, ValueError):
+        window = 0
+    if window not in HISTORY_WINDOWS:
+        return jsonify({"error": "window must be one of 7, 30, 180"}), 400
+
+    # "today" comes from the client's own local calendar date, not the
+    # server clock -- PythonAnywhere's server timezone need not match the
+    # user's, and using the server's date here could put a point on the
+    # wrong side of a day/week boundary near midnight in the user's timezone.
+    today = _parse_iso_date(request.args.get("today")) or date.today()
+
+    dataset = read_dataset()
+    snapshots = dataset.get("snapshots") or {}
+    return jsonify(build_history_response(snapshots, window, today))
 
 
 if __name__ == "__main__":
