@@ -113,6 +113,32 @@
     color: #7f1d1d; font-size: 12.5px; line-height: 1.6;
   }
   details summary { cursor: pointer; font-size: 12px; color: var(--accent); margin: 4px 0; }
+
+  .picker-group { margin-bottom: 10px; }
+  .picker-group-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); margin-bottom: 5px; font-weight: 600; }
+  .picker-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .picker-chip {
+    display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 12px;
+    border: 1px solid var(--border); background: #fff; color: var(--text-dim); font-size: 11.5px; cursor: pointer;
+    user-select: none;
+  }
+  .picker-chip .swatch { width: 8px; height: 8px; border-radius: 50%; background: var(--track); flex-shrink: 0; }
+  .picker-chip.active { border-color: transparent; color: #fff; font-weight: 600; }
+  .window-select { display: flex; gap: 4px; margin-bottom: 14px; }
+  .window-select button { padding: 5px 12px; font-size: 12px; background: var(--track); color: var(--text); }
+  .window-select button.active { background: var(--accent); color: #fff; }
+  .chart-wrap { position: relative; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 8px; font-size: 11.5px; color: var(--text-dim); }
+  .chart-legend .item { display: flex; align-items: center; gap: 5px; }
+  .chart-legend .swatch { width: 10px; height: 2px; flex-shrink: 0; }
+  .chart-tooltip {
+    position: absolute; pointer-events: none; background: #1c1e21; color: #fff; font-size: 11px;
+    padding: 7px 9px; border-radius: 6px; line-height: 1.5; box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    z-index: 5; white-space: nowrap;
+  }
+  .chart-tooltip .row { display: flex; align-items: center; gap: 5px; }
+  .chart-tooltip .swatch { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .chart-tooltip .date { font-weight: 600; margin-bottom: 3px; }
 </style>
 </head>
 <body>
@@ -569,6 +595,101 @@ function computeAllLevels(entries, now) {
       : computeDailyLevel(entries, n.key, now);
   });
   return levels;
+}
+
+/* ============================================================================
+ * HISTORICAL INTAKE SNAPSHOTS
+ * ----------------------------------------------------------------------------
+ * Once a calendar day is fully in the past, its per-nutrient %-of-target gets
+ * frozen into snapshots[dateKey][nutrientKey] = { pct, raw, target } so the
+ * History tab has stable numbers to chart even after settings change or the
+ * live decay values keep drifting. This is deliberately independent of
+ * "reset": nothing above is ever truncated -- computeDailyLevel/
+ * computeLookbackLevel always recompute live from the full, untouched log,
+ * and this section just captures their output once a day is done.
+ *
+ * `raw` is the SAME level `pct` is derived from (raw / target * 100 == pct)
+ * -- for daily-reset/calcium nutrients that's the day's literal intake; for
+ * lookback nutrients it's the decayed running total, NOT that single day's
+ * literal intake. Keeping it this way (rather than always using the literal
+ * day's intake) means the tooltip means the same thing for every nutrient
+ * regardless of class: "the amount you had in your body, compared to what
+ * you should have had, on this day."
+ *
+ * `target` is locked in at snapshot time (whatever computeTargets(config)
+ * returns right now) specifically so a later settings edit doesn't
+ * retroactively distort already-computed history. One inherent limitation:
+ * config itself isn't timestamped, so a day backfilled long after the fact
+ * uses today's config, not whatever was actually active on that historical
+ * day -- there's no way to recover the latter.
+ * ========================================================================= */
+const SNAPSHOT_BACKFILL_CAP_DAYS = 180;
+
+function localDateKey(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// Calendar-day arithmetic via the Date constructor/setDate (NOT raw
+// millisecond addition) so this stays correct across DST transitions, where
+// a "day" isn't always exactly 86400000ms.
+function addDays(y, m0, day, n) {
+  const d = new Date(y, m0, day, 0, 0, 0, 0);
+  d.setDate(d.getDate() + n);
+  return d;
+}
+
+// Fills in every completed day between the latest existing snapshot and
+// yesterday. With no existing snapshots at all, starts from the earliest
+// logged day (capped to SNAPSHOT_BACKFILL_CAP_DAYS back) instead -- covering
+// both "ongoing catch-up" (runs on load / after any log write) and the
+// "one-time initial backfill" the feature ships with, since they're the same
+// operation with a different starting point. Never touches today (not a
+// completed day yet) or any date already present in `existingSnapshots`
+// (already locked in, per the note above).
+function catchUpSnapshots(log, existingSnapshots, targets, now) {
+  const today = addDays(now.getFullYear(), now.getMonth(), now.getDate(), 0);
+  const yesterday = addDays(today.getFullYear(), today.getMonth(), today.getDate(), -1);
+
+  const existingDates = Object.keys(existingSnapshots);
+  let cursor;
+  if (existingDates.length > 0) {
+    const lastKey = existingDates.sort()[existingDates.length - 1];
+    const [y, m, d] = lastKey.split('-').map(Number);
+    cursor = addDays(y, m - 1, d, 1);
+  } else {
+    if (log.length === 0) return { changed: false, snapshots: existingSnapshots };
+    const earliestTs = Math.min(...log.map(e => e.timestamp));
+    const ed = new Date(earliestTs);
+    const earliestDay = addDays(ed.getFullYear(), ed.getMonth(), ed.getDate(), 0);
+    const capDay = addDays(today.getFullYear(), today.getMonth(), today.getDate(), -SNAPSHOT_BACKFILL_CAP_DAYS);
+    cursor = earliestDay.getTime() > capDay.getTime() ? earliestDay : capDay;
+  }
+
+  if (cursor.getTime() > yesterday.getTime()) return { changed: false, snapshots: existingSnapshots };
+
+  const next = { ...existingSnapshots };
+  let d = cursor;
+  while (d.getTime() <= yesterday.getTime()) {
+    const key = localDateKey(d);
+    if (!next[key]) {
+      const dayStart = d.getTime();
+      const dayEndMs = addDays(d.getFullYear(), d.getMonth(), d.getDate(), 1).getTime() - 1;
+      const snapshot = {};
+      NUTRIENTS.forEach(n => {
+        const level = (n.decay === 'lookback')
+          ? computeLookbackLevel(log, n.key, dayEndMs)
+          : computeDailyLevel(log, n.key, dayStart);
+        const target = targets[n.key].target;
+        snapshot[n.key] = { pct: target > 0 ? (level / target) * 100 : 0, raw: level, target };
+      });
+      next[key] = snapshot;
+    }
+    d = addDays(d.getFullYear(), d.getMonth(), d.getDate(), 1);
+  }
+  return { changed: true, snapshots: next };
 }
 
 /* ============================================================================
@@ -1075,6 +1196,270 @@ function Dashboard({ levels, targets }) {
   );
 }
 
+/* ============================================================================
+ * HISTORY TAB — nutrient picker, time-window selector, and a hand-rolled SVG
+ * line chart (no charting library) plotting each selected nutrient's %-of-
+ * target over time, sourced from GET /api/history.
+ * ========================================================================= */
+const CHART_PALETTE = [
+  '#2563eb', '#dc2626', '#16a34a', '#d97706', '#7c3aed', '#0891b2',
+  '#db2777', '#65a30d', '#ea580c', '#4f46e5', '#0d9488', '#be123c',
+];
+function colorForNutrient(key) {
+  const idx = NUTRIENTS.findIndex(n => n.key === key);
+  return CHART_PALETTE[(idx < 0 ? 0 : idx) % CHART_PALETTE.length];
+}
+function thresholdPctForNutrient(n) {
+  return (n.decay === 'lookback' ? LOOKBACK_FLAG_THRESHOLD : DAILY_FLAG_THRESHOLD) * 100;
+}
+
+function NutrientPicker({ selectedKeys, onToggle }) {
+  return (
+    <div>
+      {GROUP_ORDER.map(group => (
+        <div className="picker-group" key={group}>
+          <div className="picker-group-title">{GROUP_LABELS[group]}</div>
+          <div className="picker-chips">
+            {NUTRIENTS.filter(n => n.group === group).map(n => {
+              const active = selectedKeys.includes(n.key);
+              const color = colorForNutrient(n.key);
+              return (
+                <div
+                  key={n.key}
+                  className={"picker-chip" + (active ? ' active' : '')}
+                  style={active ? { background: color } : {}}
+                  onClick={() => onToggle(n.key)}
+                >
+                  <span className="swatch" style={active ? { background: '#fff' } : { background: color }} />
+                  {n.label}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Pure-SVG line chart, no charting library — this app (see fetchData/saveData
+// below) makes no external calls other than to its own backend, and pulling
+// a chart lib from a CDN would add one. x is index-based (even spacing per
+// point, labeled by date/week-of) rather than time-scaled, since the
+// 180-day view's buckets aren't evenly spaced in calendar time anyway (the
+// oldest one may be partial). y auto-scales to the data's own min/max
+// (padded), NOT clamped to 100%, so ratio-of-target below/above target is
+// equally visible either direction.
+function HistoryChart({ points, series }) {
+  const width = 760, height = 320;
+  const padL = 44, padR = 16, padT = 16, padB = 32;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+  const [hoverIdx, setHoverIdx] = useState(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const svgRef = useRef(null);
+
+  const n = points.length;
+  const xFor = (i) => (n <= 1 ? padL + plotW / 2 : padL + (plotW * i) / (n - 1));
+
+  const allValues = [];
+  series.forEach(s => {
+    points.forEach(p => {
+      const v = p.nutrients[s.key];
+      if (v && v.pct != null) allValues.push(v.pct);
+    });
+    allValues.push(s.threshold);
+  });
+  let yMin = allValues.length ? Math.min(...allValues) : 0;
+  let yMax = allValues.length ? Math.max(...allValues) : 100;
+  if (yMin === yMax) { yMin -= 10; yMax += 10; }
+  const pad = (yMax - yMin) * 0.1;
+  yMin = Math.max(0, yMin - pad);
+  yMax = yMax + pad;
+  const yFor = (v) => padT + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
+
+  const yTicks = 5;
+  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) => yMin + ((yMax - yMin) * i) / yTicks);
+
+  // Show every label if there's room, otherwise thin them out.
+  const labelEvery = Math.max(1, Math.ceil(n / 8));
+
+  const handleMove = (evt) => {
+    if (!svgRef.current || n === 0) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const scaleX = width / rect.width;
+    const mx = (evt.clientX - rect.left) * scaleX;
+    let closest = 0, closestDist = Infinity;
+    for (let i = 0; i < n; i++) {
+      const d = Math.abs(xFor(i) - mx);
+      if (d < closestDist) { closestDist = d; closest = i; }
+    }
+    setHoverIdx(closest);
+    setMousePos({ x: evt.clientX - rect.left, y: evt.clientY - rect.top });
+  };
+
+  if (n === 0) {
+    return <div className="empty-state">No history data in this window yet.</div>;
+  }
+
+  const hovered = hoverIdx != null ? points[hoverIdx] : null;
+
+  return (
+    <div className="chart-wrap">
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${width} ${height}`}
+        style={{ width: '100%', height: 'auto', display: 'block' }}
+        onMouseMove={handleMove}
+        onMouseLeave={() => setHoverIdx(null)}
+      >
+        {tickVals.map((v, i) => (
+          <g key={i}>
+            <line x1={padL} x2={width - padR} y1={yFor(v)} y2={yFor(v)} stroke="var(--border)" strokeWidth="1" />
+            <text x={padL - 6} y={yFor(v) + 3} textAnchor="end" fontSize="9" fill="var(--text-dim)">
+              {Math.round(v)}%
+            </text>
+          </g>
+        ))}
+        {points.map((p, i) => (
+          i % labelEvery === 0 && (
+            <text key={i} x={xFor(i)} y={height - padB + 14} textAnchor="middle" fontSize="9" fill="var(--text-dim)">
+              {p.date.slice(5)}
+            </text>
+          )
+        ))}
+        {series.map(s => (
+          <line
+            key={'thr-' + s.key}
+            x1={padL} x2={width - padR} y1={yFor(s.threshold)} y2={yFor(s.threshold)}
+            stroke={s.color} strokeWidth="1" strokeDasharray="4 3" opacity="0.45"
+          />
+        ))}
+        {series.map(s => {
+          const pathParts = [];
+          points.forEach((p, i) => {
+            const v = p.nutrients[s.key];
+            if (!v || v.pct == null) return;
+            const cmd = pathParts.length === 0 ? 'M' : 'L';
+            pathParts.push(`${cmd}${xFor(i)},${yFor(v.pct)}`);
+          });
+          return (
+            <path key={s.key} d={pathParts.join(' ')} fill="none" stroke={s.color} strokeWidth="2" />
+          );
+        })}
+        {series.map(s => points.map((p, i) => {
+          const v = p.nutrients[s.key];
+          if (!v || v.pct == null) return null;
+          return (
+            <circle
+              key={s.key + i} cx={xFor(i)} cy={yFor(v.pct)} r={hoverIdx === i ? 3.5 : 2}
+              fill={s.color}
+            />
+          );
+        }))}
+        {hoverIdx != null && (
+          <line x1={xFor(hoverIdx)} x2={xFor(hoverIdx)} y1={padT} y2={padT + plotH} stroke="var(--text-dim)" strokeWidth="1" strokeDasharray="2 2" />
+        )}
+      </svg>
+      {hovered && (
+        <div className="chart-tooltip" style={{ left: Math.min(mousePos.x + 12, width - 180), top: Math.max(mousePos.y - 10, 0) }}>
+          <div className="date">
+            {hovered.weekStart ? `Week of ${hovered.weekStart} – ${hovered.weekEnd}` : hovered.date}
+          </div>
+          {series.map(s => {
+            const v = hovered.nutrients[s.key];
+            return (
+              <div className="row" key={s.key}>
+                <span className="swatch" style={{ background: s.color }} />
+                <span>
+                  {s.label}: {v && v.pct != null ? v.pct.toFixed(0) + '%' : '—'}
+                  {v && v.raw != null ? ` (${fmtNum(v.raw, s.unit)} / ${fmtNum(v.target, s.unit)} ${s.unit})` : ''}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HistoryTrends() {
+  const [selectedKeys, setSelectedKeys] = useState(['kcal', 'protein']);
+  const [windowDays, setWindowDays] = useState(30);
+  const [historyData, setHistoryData] = useState(null);
+  const [historyError, setHistoryError] = useState(null);
+
+  useEffect(() => {
+    setHistoryError(null);
+    const todayKey = localDateKey(new Date());
+    fetch(`/api/history?window=${windowDays}&today=${todayKey}`)
+      .then(res => {
+        if (res.status === 401 || res.redirected) {
+          window.location.href = '/login';
+          return new Promise(() => {});
+        }
+        if (!res.ok) throw new Error('GET /api/history failed: ' + res.status);
+        return res.json();
+      })
+      .then(data => setHistoryData(data))
+      .catch(err => setHistoryError(String(err)));
+  }, [windowDays]);
+
+  const toggleKey = (key) => {
+    setSelectedKeys(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
+  };
+
+  const series = selectedKeys.map(key => {
+    const n = NUTRIENT_BY_KEY[key];
+    return { key, label: n.label, unit: n.unit, color: colorForNutrient(key), threshold: thresholdPctForNutrient(n) };
+  });
+
+  return (
+    <div className="panel">
+      <h2>Intake History</h2>
+      <div className="muted" style={{ marginBottom: 10 }}>
+        Once-per-completed-day snapshots of %-of-target for all tracked nutrients. Each selected nutrient
+        gets its own line, in its own color, with its own faint dashed threshold line (70% for daily-reset
+        nutrients and calcium, 60% for slow-decay nutrients) — so mixing nutrient classes on one chart still
+        shows the right threshold for each.
+      </div>
+      <NutrientPicker selectedKeys={selectedKeys} onToggle={toggleKey} />
+      <div className="window-select" style={{ marginTop: 12 }}>
+        {[7, 30, 180].map(w => (
+          <button
+            key={w}
+            className={windowDays === w ? 'active' : 'secondary'}
+            onClick={() => setWindowDays(w)}
+          >
+            {w} days
+          </button>
+        ))}
+      </div>
+      {historyError && <div className="callout">Couldn't load history: {historyError}</div>}
+      {!historyError && series.length === 0 && (
+        <div className="empty-state">Pick at least one nutrient above to chart it.</div>
+      )}
+      {!historyError && series.length > 0 && !historyData && (
+        <div className="empty-state">Loading…</div>
+      )}
+      {!historyError && series.length > 0 && historyData && (
+        <React.Fragment>
+          <HistoryChart points={historyData.points} series={series} />
+          <div className="chart-legend">
+            {series.map(s => (
+              <div className="item" key={s.key}>
+                <span className="swatch" style={{ background: s.color }} />
+                {s.label} (threshold {Math.round(s.threshold)}%)
+              </div>
+            ))}
+          </div>
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
 function FoodPicker({ foods, selectedId, onSelect }) {
   const [query, setQuery] = useState('');
   const [expandedId, setExpandedId] = useState(null);
@@ -1171,7 +1556,7 @@ function LogHistory({ entries, onDelete, onEditGrams }) {
   const sorted = [...entries].sort((a, b) => b.timestamp - a.timestamp);
   return (
     <div className="panel">
-      <h2>Log History</h2>
+      <h2>Meal Log</h2>
       {sorted.length === 0 && <div className="empty-state">No entries logged yet.</div>}
       {sorted.length > 0 && (
         <div>
@@ -1656,6 +2041,7 @@ function App() {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [customFoods, setCustomFoods] = useState([]);
   const [log, setLog] = useState([]);
+  const [snapshots, setSnapshots] = useState({});
   const [editRecipeRequest, setEditRecipeRequest] = useState(null);
   const [, forceTick] = useState(0);
   const saveTimer = useRef(null);
@@ -1667,23 +2053,24 @@ function App() {
         setConfig({ ...DEFAULT_CONFIG, ...(data.config || {}) });
         setCustomFoods(data.customFoods || []);
         setLog(data.log || []);
+        setSnapshots(data.snapshots || {});
         setLoaded(true);
       })
       .catch(err => setLoadError(String(err)));
   }, []);
 
   // Persist to the hosted backend (debounced POST /api/data) whenever
-  // config/customFoods/log change, once the initial load has completed.
+  // config/customFoods/log/snapshots change, once the initial load has completed.
   useEffect(() => {
     if (!loaded) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      saveData({ config, customFoods, log })
+      saveData({ config, customFoods, log, snapshots })
         .then(() => setSaveError(null))
         .catch(err => setSaveError(String(err)));
     }, 400);
     return () => clearTimeout(saveTimer.current);
-  }, [config, customFoods, log, loaded]);
+  }, [config, customFoods, log, snapshots, loaded]);
 
   // Re-render periodically so decay bars visibly drift even with no new actions.
   useEffect(() => {
@@ -1694,6 +2081,21 @@ function App() {
   const allFoods = useMemo(() => [...SEED_FOODS, ...customFoods], [customFoods]);
   const targets = useMemo(() => computeTargets(config), [config]);
   const levels = useMemo(() => computeAllLevels(log, Date.now()), [log]);
+
+  // Historical-snapshot catch-up: runs on load and after every log write
+  // (both covered by the `log` dependency), independent of however the live
+  // "reset" itself works -- backfills every completed day since the latest
+  // existing snapshot (or, the very first time, since the earliest logged
+  // day / SNAPSHOT_BACKFILL_CAP_DAYS back, whichever is later) from the raw
+  // log, which is retained indefinitely (see catchUpSnapshots for the rest).
+  useEffect(() => {
+    if (!loaded) return;
+    const result = catchUpSnapshots(log, snapshots, targets, new Date());
+    if (result.changed) setSnapshots(result.snapshots);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally
+    // omits `snapshots` itself: it's only ever grown here, and including it
+    // would re-run this on every write it causes.
+  }, [log, loaded, targets]);
 
   const handleLogFood = (food, grams) => {
     const entry = {
@@ -1798,6 +2200,7 @@ function App() {
       <div className="tabs">
         <button className={"tab" + (tab === 'dashboard' ? ' active' : '')} onClick={() => setTab('dashboard')}>Dashboard</button>
         <button className={"tab" + (tab === 'log' ? ' active' : '')} onClick={() => setTab('log')}>Log Food</button>
+        <button className={"tab" + (tab === 'meallog' ? ' active' : '')} onClick={() => setTab('meallog')}>Meal Log</button>
         <button className={"tab" + (tab === 'history' ? ' active' : '')} onClick={() => setTab('history')}>History</button>
         <button className={"tab" + (tab === 'addfood' ? ' active' : '')} onClick={() => setTab('addfood')}>Add Food</button>
         <button className={"tab" + (tab === 'managefoods' ? ' active' : '')} onClick={() => setTab('managefoods')}>My Foods</button>
@@ -1825,7 +2228,8 @@ function App() {
         </React.Fragment>
       )}
       {tab === 'log' && <LogEntryPanel foods={allFoods} onLog={handleLogFood} />}
-      {tab === 'history' && <LogHistory entries={log} onDelete={handleDeleteEntry} onEditGrams={handleEditGrams} />}
+      {tab === 'meallog' && <LogHistory entries={log} onDelete={handleDeleteEntry} onEditGrams={handleEditGrams} />}
+      {tab === 'history' && <HistoryTrends />}
       {tab === 'addfood' && (
         <AddFoodTabs
           allFoods={allFoods}
